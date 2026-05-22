@@ -42,8 +42,8 @@
             </div>
             <div class="col-sm-3">
                 <div style="background:#f6f8fb;padding:14px;border-radius:8px;text-align:center;">
-                    <div style="font-size:24px;font-weight:600;">{$projectsCount|default:0}</div>
-                    <div style="color:#666;font-size:13px;">Projects</div>
+                    <div style="font-size:24px;font-weight:600;">${$usdCredits|default:0|string_format:"%.2f"}</div>
+                    <div style="color:#666;font-size:13px;">AI spend this month</div>
                 </div>
             </div>
             <div class="col-sm-3">

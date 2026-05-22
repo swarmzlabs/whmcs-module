@@ -314,10 +314,23 @@ function swarmz_AdminSingleSignOn(array $params)
 /**
  * Return current-period usage for the workspace.
  *
- * WHMCS expects the data shape to match the metrics defined by the module
- * (Usage Billing). We return a flat associative array of metric->units; if
- * Usage Billing isn't configured, WHMCS ignores the structured fields and only
- * the disk/bw numbers (if any) are surfaced in the client area.
+ * The live /enterprise-usage endpoint returns the shape:
+ *   { ok: true, usage: {
+ *       credits_used: number,
+ *       usd_credits:  number,
+ *       cloud_usd:    number,
+ *       period:       { from: ISO, to: ISO, label: "current_month"|"last_month"|"ytd" },
+ *       by_workspace: [{ workspace_id, credits_used, usd_credits, cloud_usd }]
+ *   } }
+ *
+ * IMPORTANT: the endpoint resolves the workspace ONLY by tenant_id; passing
+ * external_ref alone returns account-wide aggregate (a leak in this context).
+ * We therefore only call it once we know the tenant_id — otherwise we return
+ * a tidy "not provisioned yet" response without hitting the API.
+ *
+ * Pricing knobs (credits_per_day, monthly_credit_cap, max_projects, etc.) live
+ * in the WHMCS product config, so we surface those locally as the "limit"
+ * values rather than trying to fish them out of the usage response.
  *
  * @param array $params
  * @return array
@@ -326,41 +339,131 @@ function swarmz_UsageUpdate(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     $externalRef = Helpers::buildExternalRef($serviceId);
+    $tenantId = Helpers::getTenantId($serviceId);
+
+    // Local entitlement view — what the admin configured on the product. We
+    // surface this even if the API call fails, so the client area still shows
+    // a useful credit budget.
+    $entitlements = Helpers::mapConfigOptionsToEntitlements($params);
+    $creditsLimit = $entitlements['monthly_credit_cap'] ?? null;
+    if ($creditsLimit === null) {
+        // Fall back to daily * 30 as a soft month-ish ceiling, if a daily cap is set.
+        $dailyCap = $entitlements['credits_per_day'] ?? null;
+        if ($dailyCap !== null) {
+            $creditsLimit = (int) $dailyCap * 30;
+        }
+    }
+
+    // Not provisioned yet → don't hit the API; return a friendly placeholder
+    // so the client area template can render without errors. The endpoint
+    // does NOT resolve by external_ref alone — it would silently return the
+    // entire account's aggregate, which is the wrong number to show this
+    // client.
+    if ($tenantId === null) {
+        return [
+            'success'       => true,
+            'creditsUsed'   => 0,
+            'creditsLimit'  => $creditsLimit,
+            'cloudUsd'      => 0.0,
+            'usdCredits'    => 0.0,
+            'projectsCount' => 0,
+            'domainsCount'  => null,
+            'periodStart'   => null,
+            'periodEnd'     => null,
+            'raw'           => [],
+        ];
+    }
 
     $api = null;
     try {
         $api = Helpers::makeApiClient($params);
 
-        $body = ['external_ref' => $externalRef, 'period' => 'current_month'];
-        $tenantId = Helpers::getTenantId($serviceId);
-        if ($tenantId !== null) {
-            $body['tenant_id'] = $tenantId;
-        }
+        // external_ref is included for log-correlation only; the endpoint
+        // ignores it for resolution and uses tenant_id exclusively.
+        $body = [
+            'tenant_id'    => $tenantId,
+            'external_ref' => $externalRef,
+            'period'       => 'current_month',
+        ];
 
         $result = $api->postEnterprise('enterprise-usage', $body);
         $resp = $result['body'];
 
         _swarmz_logModuleCall('UsageUpdate', $body, $resp, $api->maskedKey());
 
-        // Normalize: API returns { ok, usage: { credits_used, credits_limit, cloud_usd, projects_count, ... } }
         $usage = isset($resp['usage']) && is_array($resp['usage']) ? $resp['usage'] : [];
+        $period = isset($usage['period']) && is_array($usage['period']) ? $usage['period'] : [];
 
         return [
-            'success'        => true,
-            'creditsUsed'    => $usage['credits_used']    ?? 0,
-            'creditsLimit'   => $usage['credits_limit']   ?? null,
-            'cloudUsd'       => $usage['cloud_usd']       ?? 0,
-            'projectsCount'  => $usage['projects_count']  ?? 0,
-            'domainsCount'   => $usage['domains_count']   ?? 0,
-            'periodStart'    => $usage['period_start']    ?? null,
-            'periodEnd'      => $usage['period_end']      ?? null,
-            'raw'            => $usage,
+            'success'       => true,
+            'creditsUsed'   => isset($usage['credits_used']) ? (float) $usage['credits_used'] : 0.0,
+            'creditsLimit'  => $creditsLimit,
+            'cloudUsd'      => isset($usage['cloud_usd'])    ? (float) $usage['cloud_usd']    : 0.0,
+            'usdCredits'    => isset($usage['usd_credits'])  ? (float) $usage['usd_credits']  : 0.0,
+            // The live endpoint doesn't return project/domain counts; null tells
+            // the template to omit the field rather than show "0".
+            'projectsCount' => null,
+            'domainsCount'  => null,
+            'periodStart'   => $period['from']  ?? null,
+            'periodEnd'     => $period['to']    ?? null,
+            'periodLabel'   => $period['label'] ?? null,
+            'raw'           => $usage,
+        ];
+    } catch (SwarmzApiException $e) {
+        // `usage_read_failed` is a known soft failure — the metrics view can be
+        // briefly incomplete during a server-side migration. Treat as a
+        // "no data yet" outcome instead of an error so the client area still
+        // renders the SSO button + budget hints.
+        $isSoft = ($e->getErrorCode() === 'usage_read_failed');
+        _swarmz_logModuleCall(
+            $isSoft ? 'UsageUpdate.SoftUnavailable' : 'UsageUpdate.Error',
+            $params,
+            ['error' => $e->getMessage(), 'status' => $e->getStatusCode()],
+            $api ? $api->maskedKey() : ''
+        );
+        if ($isSoft) {
+            return [
+                'success'       => true,
+                'creditsUsed'   => 0.0,
+                'creditsLimit'  => $creditsLimit,
+                'cloudUsd'      => 0.0,
+                'usdCredits'    => 0.0,
+                'projectsCount' => null,
+                'domainsCount'  => null,
+                'periodStart'   => null,
+                'periodEnd'     => null,
+                'periodLabel'   => null,
+                'raw'           => [],
+                'note'          => 'metrics_unavailable',
+            ];
+        }
+        return [
+            'success'  => false,
+            'errorMsg' => Helpers::formatError($e, $api ? $api->maskedKey() : null),
+            // Carry-through the locally-known values so the template still has
+            // something useful to render even when the API call fails.
+            'creditsUsed'   => 0.0,
+            'creditsLimit'  => $creditsLimit,
+            'cloudUsd'      => 0.0,
+            'usdCredits'    => 0.0,
+            'projectsCount' => null,
+            'domainsCount'  => null,
+            'periodStart'   => null,
+            'periodEnd'     => null,
         ];
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('UsageUpdate.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
         return [
             'success'  => false,
             'errorMsg' => Helpers::formatError($e, $api ? $api->maskedKey() : null),
+            'creditsUsed'   => 0.0,
+            'creditsLimit'  => $creditsLimit,
+            'cloudUsd'      => 0.0,
+            'usdCredits'    => 0.0,
+            'projectsCount' => null,
+            'domainsCount'  => null,
+            'periodStart'   => null,
+            'periodEnd'     => null,
         ];
     }
 }
@@ -445,7 +548,8 @@ function swarmz_ClientArea(array $params)
             'creditsUsed'   => $usage['creditsUsed']   ?? 0,
             'creditsLimit'  => $usage['creditsLimit']  ?? null,
             'cloudUsd'      => $usage['cloudUsd']      ?? 0,
-            'projectsCount' => $usage['projectsCount'] ?? 0,
+            'usdCredits'    => $usage['usdCredits']    ?? 0,
+            'projectsCount' => $usage['projectsCount'], // may be null — template handles it
         ],
     ];
 }
@@ -458,6 +562,26 @@ function swarmz_ClientArea(array $params)
 /**
  * Server connectivity test from the WHMCS Servers form.
  *
+ * Strategy: hit /enterprise-sso with a deliberately-non-existent tenant_id.
+ * The endpoint requires a valid bearer key BEFORE it looks up the tenant, so
+ * the auth check fires first. We then expect a 404 (tenant_not_found) or
+ * similar "key valid, tenant missing" reply — that proves connectivity AND
+ * key validity in a single round-trip without any side effects.
+ *
+ * We deliberately avoid /enterprise-usage here: that endpoint is read-only
+ * but its underlying view is currently incomplete on the deployed server,
+ * so it's not a reliable liveness probe.
+ *
+ * Accepted "good" outcomes for the smoke probe:
+ *   - HTTP 404 tenant_not_found  → auth ok, tenant missing (expected)
+ *   - HTTP 410 terminated        → auth ok, tenant was once real (unlikely)
+ *   - HTTP 400 missing_fields    → auth ok, body shape rejected (also fine)
+ *
+ * Bad outcomes:
+ *   - HTTP 401 unauthorized      → bad key
+ *   - HTTP 5xx                   → server outage
+ *   - cURL transport error       → network / DNS / TLS
+ *
  * @param array $params
  * @return array{success: bool, error?: string}
  */
@@ -466,13 +590,42 @@ function swarmz_TestConnection(array $params)
     $api = null;
     try {
         $api = Helpers::makeApiClient($params);
-        // Hit /enterprise-usage with no tenant — the API will respond with the
-        // account-level usage view if the key is valid (or 401 if not).
-        $result = $api->postEnterprise('enterprise-usage', ['period' => 'current_month']);
-        _swarmz_logModuleCall('TestConnection', ['baseUrl' => $api->getBaseUrl()], $result['body'], $api->maskedKey());
-        return ['success' => true];
+        // Use a zero UUID — a syntactically-valid tenant_id that cannot
+        // exist in the wild. The endpoint resolves it through workspaces.id
+        // (UUID column), so this short-circuits to "not found".
+        $body = ['tenant_id' => '00000000-0000-0000-0000-000000000000'];
+        try {
+            $result = $api->postEnterprise('enterprise-sso', $body);
+            _swarmz_logModuleCall(
+                'TestConnection',
+                ['baseUrl' => $api->getBaseUrl()],
+                $result['body'],
+                $api->maskedKey()
+            );
+            return ['success' => true];
+        } catch (SwarmzApiException $e) {
+            $status = $e->getStatusCode();
+            $code   = $e->getErrorCode();
+            // 4xx with a non-auth code → key is valid, tenant lookup failed (expected).
+            if ($status >= 400 && $status < 500 && $code !== 'unauthorized') {
+                _swarmz_logModuleCall(
+                    'TestConnection',
+                    ['baseUrl' => $api->getBaseUrl()],
+                    ['note' => sprintf('Expected %d %s — key is valid.', $status, $code)],
+                    $api->maskedKey()
+                );
+                return ['success' => true];
+            }
+            // 401 / 403 / 5xx → propagate as failure.
+            throw $e;
+        }
     } catch (\Throwable $e) {
-        _swarmz_logModuleCall('TestConnection.Error', ['baseUrl' => $api ? $api->getBaseUrl() : null], ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
+        _swarmz_logModuleCall(
+            'TestConnection.Error',
+            ['baseUrl' => $api ? $api->getBaseUrl() : null],
+            ['error' => $e->getMessage()],
+            $api ? $api->maskedKey() : ''
+        );
         return [
             'success' => false,
             'error'   => Helpers::formatError($e, $api ? $api->maskedKey() : null),
