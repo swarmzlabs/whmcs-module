@@ -1,0 +1,38 @@
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS detritus
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local secrets — never commit
+*.env
+*.env.local
+.envrc
+secrets/
+
+# PHP tooling
+vendor/
+composer.lock
+composer.phar
+.phpunit.result.cache
+.php-cs-fixer.cache
+.phpcs-cache
+
+# WHMCS detritus (in case anyone tests in-tree)
+*.log
+attachments/
+downloads/
+templates_c/
+modules/servers/swarmz/logs/
+
+# Build artifacts
+*.zip
+*.tar.gz
+build/
+dist/
