@@ -5,6 +5,54 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] - 2026-05-23
+
+End-to-end verification pass against the live deployed `enterprise-*`
+endpoints, running the module's smoke suite against
+`https://ashyyneusxtubdhsfpod.supabase.co/functions/v1`. All 20
+assertions (every hook + idempotency + suspended-SSO + post-terminate
+re-create) pass against the real backend.
+
+### Fixed
+- `test/smoke.php`: the `namespace WHMCS\Database { … }` block was
+  preceded by a global-scope `define('WHMCS', true);` statement, which
+  is a parse error in PHP 8.x. The constant is now defined inside the
+  same global `namespace { … }` block as the test runner, and the
+  Capsule stub round-trips writes to in-memory tables (`tblcustomfields`,
+  `tblcustomfieldsvalues`, `tblhosting`) so the module's tenant-id
+  persistence path runs realistically during the smoke test (writes
+  done by `CreateAccount` survive into subsequent reads from
+  `SuspendAccount`, `UsageUpdate`, etc.).
+- `test/smoke.php`: smoke runner now asserts response-shape
+  invariants beyond the simple "success" string: tenant_id is stored
+  on first create, retried CreateAccount returns the SAME tenant_id,
+  usage immediately after create is zero, SSO redirect host matches
+  `https://<host>/sso?token=...`, SSO while suspended fails with a
+  reason, post-terminate re-create issues a FRESH tenant id.
+
+### Changed
+- `README.md`: "Test Connection" section now correctly describes that
+  the module probes `/enterprise-sso` with a zero-UUID tenant id (the
+  prior wording said it probed `/enterprise-usage`, which was incorrect
+  after the v1.0.1 fix).
+- `README.md`: the example `UsageUpdate` response now matches the real
+  v1.0.1+ shape (`usdCredits`, `periodLabel`, ISO8601 period bounds,
+  `projectsCount`/`domainsCount` as `null` sentinels).
+- `README.md`: added a "Smoke testing the module" section pointing at
+  `test/smoke.php` with the env-var contract.
+- `README.md`: documented the "terminate is permanent" contract — a
+  re-Create after Terminate provisions a NEW workspace with a new
+  tenant id; the previous tenant's data is irretrievably gone.
+
+### Added
+- `docs/HOSTING-COMPANY-ONBOARDING.md`: a full 11-section step-by-step
+  onboarding guide for hosting providers adopting the module. Covers
+  enterprise signup, key issuance, module install, server +
+  product config, customer experience, billing reconciliation
+  (wholesale invoicing + dunning), support escalation, white-label
+  customisation, and a troubleshooting matrix with the exact error
+  strings the module surfaces.
+
 ## [1.0.1] - 2026-05-23
 
 Post-deploy contract audit. Verified every WHMCS hook against the live

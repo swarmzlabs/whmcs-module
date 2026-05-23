@@ -75,8 +75,10 @@ to enable.
    - **Username**: `swarmz` (free text — only the password matters)
    - **Password**: paste your `sk_live_…` key here. WHMCS encrypts this field
      in `tblservers.password` automatically.
-3. Click **Test Connection**. The module hits `/enterprise-usage` with your
-   key — a green tick means the credentials are valid.
+3. Click **Test Connection**. The module hits `/enterprise-sso` with a
+   syntactically-valid but non-existent tenant id (`00000000-…`). A 4xx
+   `tenant_not_found` reply proves the bearer key is valid without any
+   side effects on the live data. A green tick means you're good to go.
 4. Save the server.
 
 > Tip: keep a separate **Sandbox** server entry pointing at a staging host
@@ -156,6 +158,17 @@ WHMCS hits these endpoints when service state changes:
 All three are idempotent-by-state: retrying after the API has already settled
 to the target state returns success rather than an error.
 
+**Termination is permanent on the Swarmz side.** If a WHMCS admin reverses
+a termination (e.g. by re-issuing a `Create` command on the same service),
+the module calls `/enterprise-create` again with the same `external_ref`.
+Because the previous workspace was hard-deleted, the API issues a *new*
+tenant id and the module overwrites the `Swarmz Tenant ID` custom field
+with the new value. The customer's previous projects, files, and history
+are NOT restored — a fresh workspace is provisioned. If you need an
+"unterminate" capability, suspend the WHMCS service instead of
+terminating it; the data stays intact on the Swarmz side until you
+explicitly terminate.
+
 ---
 
 ## Usage metrics
@@ -168,19 +181,22 @@ The module returns:
 ```php
 [
     'success'        => true,
-    'creditsUsed'    => 1245,
-    'creditsLimit'   => 5000,
-    'cloudUsd'       => 12.34,
-    'projectsCount'  => 3,
-    'domainsCount'   => 1,
-    'periodStart'    => '2026-05-01',
-    'periodEnd'      => '2026-05-31',
-    'raw'            => [/* full /enterprise-usage payload */],
+    'creditsUsed'    => 1245,    // from /enterprise-usage usage.credits_used
+    'creditsLimit'   => 5000,    // from WHMCS product config (monthly_credit_cap)
+    'usdCredits'     => 8.32,    // AI USD spend this month — usage.usd_credits
+    'cloudUsd'       => 12.34,   // cloud USD this month — usage.cloud_usd
+    'projectsCount'  => null,    // not returned by the live endpoint (null sentinel)
+    'domainsCount'   => null,    // not returned by the live endpoint (null sentinel)
+    'periodStart'    => '2026-05-01T00:00:00.000Z',  // ISO8601
+    'periodEnd'      => '2026-06-01T00:00:00.000Z',
+    'periodLabel'    => 'current_month',
+    'raw'            => [/* full usage.* payload from /enterprise-usage */],
 ]
 ```
 
 To wire these into Usage Billing or visible client-area fields, configure
 WHMCS Usage Metrics (System Settings → Products → Configure Usage Metrics).
+`creditsUsed` and `cloudUsd` are the most useful for usage billing.
 
 ---
 
@@ -237,6 +253,44 @@ workspace even if the API base changes. Do not edit them by hand.
 - WHMCS activity log: **Utilities → Logs → Activity Log**.
 - Swarmz-side: open your Swarmz admin and check the **Enterprise → API
   calls** stream for the failing request id.
+
+---
+
+## Smoke testing the module
+
+This repo ships a self-contained smoke runner under `test/smoke.php`. It
+loads the module outside WHMCS (stubbing the `WHMCS\Database\Capsule`
+facade and `logModuleCall()`) and runs every server-module hook against
+your live Swarmz API in sequence:
+
+```
+SWARMZ_API_KEY=sk_live_…                                  \
+SWARMZ_API_BASE=https://ashyyneusxtubdhsfpod.supabase.co  \
+SWARMZ_TEST_SERVICE_ID=99999                              \
+SWARMZ_TEST_PRODUCT_ID=1                                  \
+php test/smoke.php
+```
+
+The runner exercises the full provision-suspend-unsuspend-terminate
+cycle, including idempotency (CreateAccount twice, SuspendAccount twice,
+TerminateAccount twice) and the un-terminate-via-re-Create path (a
+fresh tenant id is issued, the WHMCS service's custom field updated).
+
+A successful run exits 0 with `All steps passed.`; any failure exits 1
+and prints the bad step's response body. The smoke run creates and then
+**terminates** the test workspace it provisions — but the parent
+enterprise account, contract and key are persistent test fixtures that
+you must clean up yourself (see `docs/HOSTING-COMPANY-ONBOARDING.md`
+"Troubleshooting").
+
+---
+
+## Hosting-company onboarding guide
+
+A separate step-by-step guide for hosting companies adopting the module
+lives at [`docs/HOSTING-COMPANY-ONBOARDING.md`](docs/HOSTING-COMPANY-ONBOARDING.md).
+It walks through the entire customer journey from "sign up for Swarmz
+Enterprise" to "first paying customer" with reconciliation tips.
 
 ---
 

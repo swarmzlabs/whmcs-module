@@ -2,15 +2,19 @@
 /**
  * Swarmz WHMCS module — live API smoke test.
  *
- * Runs each WHMCS hook against the real swarmz enterprise API. Exercises:
+ * Runs every WHMCS hook against the real swarmz enterprise API and asserts
+ * the response shape + state transitions a hosting company would see.
+ * Exercises:
  *   - swarmz_TestConnection
- *   - swarmz_CreateAccount  (twice — verifies idempotency)
- *   - swarmz_ChangePackage
- *   - swarmz_UsageUpdate
- *   - swarmz_ServiceSingleSignOn
- *   - swarmz_SuspendAccount
- *   - swarmz_UnsuspendAccount
- *   - swarmz_TerminateAccount
+ *   - swarmz_CreateAccount          (twice — idempotency)
+ *   - swarmz_ChangePackage          (entitlement push, plus round-trip check)
+ *   - swarmz_UsageUpdate            (post-create zero-state)
+ *   - swarmz_ServiceSingleSignOn    (URL host check)
+ *   - swarmz_SuspendAccount         (twice — state-idempotent)
+ *   - swarmz_ServiceSingleSignOn    (while suspended → must fail with reason)
+ *   - swarmz_UnsuspendAccount       (then SSO works again)
+ *   - swarmz_TerminateAccount       (twice — already-gone is benign)
+ *   - swarmz_CreateAccount          (after terminate → fresh tenant)
  *
  * Usage:
  *   SWARMZ_API_KEY=sk_live_… \
@@ -20,8 +24,10 @@
  *
  * The script stubs out the minimum WHMCS surface (the WHMCS constant, the
  * Capsule database facade, and `logModuleCall`) so the module can be loaded
- * outside a real WHMCS install. Capsule writes are silent no-ops in the stub
- * (we never persist anything during a smoke test).
+ * outside a real WHMCS install. The Capsule stub keeps an in-memory mirror
+ * of tblcustomfields/tblcustomfieldsvalues so the second-call paths
+ * (SuspendAccount sees the tenant_id stored by CreateAccount) behave the
+ * way they would in a real WHMCS install.
  *
  * This file is NOT included in the WHMCS install — it lives under test/ so
  * production deploys ignore it.
@@ -32,38 +38,231 @@ declare(strict_types=1);
 // ----------------------------------------------------------------------------
 // Minimal WHMCS stub. The real WHMCS bootstrap defines this constant and
 // loads WHMCS\Database\Capsule via its own autoloader; in test we provide a
-// trivial stand-in.
+// trivial stand-in that round-trips writes to satisfy the module's
+// custom-field persistence path.
+//
+// NOTE: PHP forbids `define()` (a global-scope statement) before a `namespace`
+// keyword in the same file unless that earlier statement is wrapped in its own
+// `namespace { ... }` block. The constant is therefore defined inside the
+// global block below.
 // ----------------------------------------------------------------------------
-define('WHMCS', true);
 
 namespace WHMCS\Database {
     /**
-     * Stub for the WHMCS database facade. All builder calls return $this so
-     * chained queries don't NPE; terminal queries return null/false/[] so the
-     * module's `try/catch` blocks treat the result as "no row" and skip the
-     * persistence path.
+     * In-memory stand-in for WHMCS's Capsule (Eloquent query builder facade).
+     * Tracks just enough of tblcustomfields + tblcustomfieldsvalues +
+     * tblhosting to let Helpers::setTenantId / getTenantId round-trip.
      */
     class Capsule
     {
+        /** @var array<string,array<int,array>> Table-name => rows. */
+        private static $store = [
+            'tblcustomfields'       => [],
+            'tblcustomfieldsvalues' => [],
+            'tblhosting'            => [],
+        ];
+
+        /** @var int Auto-increment for inserts. */
+        private static $idSeq = 1;
+
+        /** @var string */
+        private $table;
+
+        /** @var array<string,mixed> WHERE filters, joined ANDs. */
+        private $wheres = [];
+
+        /** @var array<int,array{string,string,string,string}> JOINs (table, lhs, op, rhs). */
+        private $joins = [];
+
         public static function table(string $name): self
         {
-            return new self();
+            $self = new self();
+            $self->table = $name;
+            if (!isset(self::$store[$name])) {
+                self::$store[$name] = [];
+            }
+            return $self;
         }
-        public function where(...$args): self { return $this; }
-        public function join(...$args): self { return $this; }
-        public function first($columns = null) { return null; }
-        public function insert(array $data): bool { return true; }
-        public function insertGetId(array $data, $sequence = null): int { return 0; }
-        public function update(array $data): int { return 0; }
+
+        public function where(...$args): self
+        {
+            // Support both where('col', 'val') and where('col', '=', 'val').
+            if (count($args) === 2) {
+                [$col, $val] = $args;
+                $this->wheres[] = [$col, '=', $val];
+            } elseif (count($args) === 3) {
+                $this->wheres[] = [$args[0], $args[1], $args[2]];
+            }
+            return $this;
+        }
+
+        public function join(string $table, string $lhs, string $op, string $rhs): self
+        {
+            $this->joins[] = [$table, $lhs, $op, $rhs];
+            return $this;
+        }
+
+        public function first($columns = null)
+        {
+            $rows = $this->resolveRows();
+            if (empty($rows)) {
+                return null;
+            }
+            $row = $rows[0];
+            // Honour `select(['table.col as alias'])` by aliasing onto the returned object.
+            if (is_array($columns)) {
+                foreach ($columns as $sel) {
+                    if (preg_match('/^(.+)\s+as\s+(.+)$/i', (string) $sel, $m)) {
+                        $src = trim($m[1]);
+                        $alias = trim($m[2]);
+                        $row->{$alias} = $this->column($row, $src);
+                    } elseif (preg_match('/^(.+)\.(.+)$/', (string) $sel, $m)) {
+                        // Bare table.col selector — copy onto unqualified key so
+                        // `$row->{col}` works (some callers use that).
+                        $unq = $m[2];
+                        if (!isset($row->{$unq})) {
+                            $row->{$unq} = $this->column($row, (string) $sel);
+                        }
+                    }
+                }
+            }
+            return $row;
+        }
+
+        public function insert(array $data): bool
+        {
+            $data['id'] = $data['id'] ?? self::$idSeq++;
+            self::$store[$this->table][] = (object) $data;
+            return true;
+        }
+
+        public function insertGetId(array $data, $sequence = null): int
+        {
+            $data['id'] = self::$idSeq++;
+            self::$store[$this->table][] = (object) $data;
+            return (int) $data['id'];
+        }
+
+        public function update(array $data): int
+        {
+            $affected = 0;
+            foreach (self::$store[$this->table] as $i => $row) {
+                if ($this->rowMatches($row, $this->wheres)) {
+                    foreach ($data as $col => $val) {
+                        self::$store[$this->table][$i]->{$col} = $val;
+                    }
+                    $affected++;
+                }
+            }
+            return $affected;
+        }
+
+        // Seed helper used by the smoke runner to register a fake service row.
+        public static function seedService(int $serviceId, int $packageId): void
+        {
+            self::$store['tblhosting'][] = (object) ['id' => $serviceId, 'packageid' => $packageId];
+        }
+
+        // ---- private ----
+
+        /** Apply WHEREs (with JOIN tracking) and return matching rows. */
+        private function resolveRows(): array
+        {
+            $base = self::$store[$this->table] ?? [];
+
+            // The module joins tblcustomfieldsvalues + tblcustomfields and
+            // sometimes tblhosting. We support both shapes used in Helpers.
+            if (empty($this->joins)) {
+                return array_values(array_filter($base, fn($r) => $this->rowMatches($r, $this->wheres)));
+            }
+
+            // Build joined view (cross-product, then filter).
+            // We tag each interim "row" with the table-name it came from so
+            // qualified column lookups (e.g. "tblhosting.packageid") work
+            // regardless of which side of the JOIN the column is on.
+            $rows = [];
+            foreach ($base as $br) {
+                // Build a tagged row: keys "<table>.<col>" + unqualified <col>.
+                $tagged = new \stdClass();
+                foreach ((array) $br as $k => $v) {
+                    $tagged->{$k} = $v;
+                    $tagged->{$this->table . '.' . $k} = $v;
+                }
+                $rows[] = $tagged;
+            }
+            foreach ($this->joins as [$jtable, $lhs, $op, $rhs]) {
+                $jrows = self::$store[$jtable] ?? [];
+                $next = [];
+                foreach ($rows as $r) {
+                    foreach ($jrows as $jr) {
+                        // Tag the join row with qualified keys too.
+                        $jrTagged = new \stdClass();
+                        foreach ((array) $jr as $k => $v) {
+                            $jrTagged->{$k} = $v;
+                            $jrTagged->{$jtable . '.' . $k} = $v;
+                        }
+                        // Merge: prefer existing keys (left-side wins on conflict).
+                        $merged = clone $r;
+                        foreach ((array) $jrTagged as $k => $v) {
+                            if (!isset($merged->{$k})) {
+                                $merged->{$k} = $v;
+                            }
+                        }
+                        // Qualified $lhs and $rhs can reference EITHER side of the join.
+                        $left  = $this->column($merged, $lhs);
+                        $right = $this->column($merged, $rhs);
+                        if ($op === '=' && $left !== null && $right !== null && $left == $right) {
+                            $next[] = $merged;
+                        }
+                    }
+                }
+                $rows = $next;
+            }
+
+            return array_values(array_filter($rows, fn($r) => $this->rowMatches($r, $this->wheres)));
+        }
+
+        /** Look up the column on a row, supporting 'table.col' qualifiers. */
+        private function column($row, string $col)
+        {
+            if (isset($row->{$col})) {
+                return $row->{$col};
+            }
+            $dot = strrpos($col, '.');
+            if ($dot !== false) {
+                $unqualified = substr($col, $dot + 1);
+                if (isset($row->{$unqualified})) {
+                    return $row->{$unqualified};
+                }
+            }
+            return null;
+        }
+
+        private function rowMatches($row, array $wheres): bool
+        {
+            foreach ($wheres as [$col, $op, $val]) {
+                $rv = $this->column($row, $col);
+                if ($rv === null) return false;
+                if ($op === '=' && $rv != $val) return false;
+            }
+            return true;
+        }
     }
 }
 
 namespace {
+    // WHMCS constant — must come BEFORE the module files are required since
+    // each one guards on `if (!defined('WHMCS')) die(...)`.
+    if (!defined('WHMCS')) {
+        define('WHMCS', true);
+    }
+
     /** WHMCS-compatible log helper. We just echo to stderr for smoke tests. */
     function logModuleCall($module, $action, $request, $response, $processedResponse = '', $replaceVars = [])
     {
-        // Don't spam stdout — comment out the next line if you want full traces.
-        // fwrite(STDERR, sprintf("[%s][%s] req=%s resp=%s\n", $module, $action, json_encode($request), json_encode($response)));
+        if (getenv('SWARMZ_SMOKE_VERBOSE')) {
+            fwrite(STDERR, sprintf("[%s][%s] req=%s resp=%s\n", $module, $action, json_encode($request), json_encode($response)));
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -86,11 +285,15 @@ namespace {
     $apiBase     = (string) (getenv('SWARMZ_API_BASE') ?: 'https://ashyyneusxtubdhsfpod.supabase.co');
     $serviceId   = (int)    (getenv('SWARMZ_TEST_SERVICE_ID') ?: 99999);
     $clientEmail = (string) (getenv('SWARMZ_TEST_EMAIL') ?: ('whmcs-audit-' . $serviceId . '@example.invalid'));
+    $productId   = (int)    (getenv('SWARMZ_TEST_PRODUCT_ID') ?: 1);
 
     if ($apiKey === '') {
         fwrite(STDERR, "Set SWARMZ_API_KEY to an sk_live_… key issued for an active enterprise account.\n");
         exit(2);
     }
+
+    // Seed a fake "service" row so Helpers::setTenantId can resolve its productId.
+    \WHMCS\Database\Capsule::seedService($serviceId, $productId);
 
     // Pull the apex host out of the base URL for the serverhostname field.
     $host = parse_url($apiBase, PHP_URL_HOST) ?: 'api.swarmz.net';
@@ -99,7 +302,7 @@ namespace {
     // Shared $params bag — the bits WHMCS would normally fill in for a service.
     $baseParams = [
         'serviceid'         => $serviceId,
-        'pid'               => 1,
+        'pid'               => $productId,
         'userid'            => 1,
         'serverhostname'    => $host,
         'serversecure'      => $secure,
@@ -118,8 +321,6 @@ namespace {
         'configoption5'     => 'nano',     // max_compute_size
         'configoption6'     => '',         // cloud_budget_cap
         'configoption7'     => '0',        // default_credits_topup
-        // Skip the auto-create custom-fields path during smoke tests; the
-        // Capsule stub above silently no-ops anyway.
     ];
 
     // Helper: pretty-print a JSON-ish value.
@@ -129,15 +330,18 @@ namespace {
     };
 
     $results = [];
-    $log = function (string $label, $outcome) use (&$results, $dump) {
-        $ok = false;
-        if (is_array($outcome)) {
+    $log = function (string $label, $outcome, ?bool $forceOk = null) use (&$results, $dump) {
+        if ($forceOk !== null) {
+            $ok = $forceOk;
+        } elseif (is_array($outcome)) {
             $ok = ($outcome['success'] ?? false) === true || (isset($outcome[0]) && $outcome[0] === 'success');
         } elseif (is_string($outcome)) {
             $ok = (stripos($outcome, 'success') === 0);
+        } else {
+            $ok = false;
         }
         $results[$label] = $ok;
-        echo str_pad("[$label]", 28, ' '), $ok ? 'OK   ' : 'FAIL ', ' ', $dump($outcome), "\n";
+        echo str_pad("[$label]", 36, ' '), $ok ? 'OK   ' : 'FAIL ', ' ', $dump($outcome), "\n";
     };
 
     // ------------------------------------------------------------------------
@@ -152,33 +356,62 @@ namespace {
     echo "\n--- CreateAccount ---\n";
     $log('CreateAccount', swarmz_CreateAccount($baseParams));
 
+    // Capture the tenant_id stamped by the module via the Capsule stub.
+    if (getenv('SWARMZ_SMOKE_DEBUG_CAPSULE')) {
+        $ref = new \ReflectionClass(\WHMCS\Database\Capsule::class);
+        $prop = $ref->getProperty('store');
+        $prop->setAccessible(true);
+        $store = $prop->getValue();
+        fwrite(STDERR, "  capsule.store dump:\n" . json_encode($store, JSON_PRETTY_PRINT) . "\n");
+    }
+    $tenantId = \WHMCS\Module\Server\Swarmz\Helpers::getTenantId($serviceId);
+    $dashUrl  = \WHMCS\Module\Server\Swarmz\Helpers::getDashboardUrl($serviceId);
+    echo "  tenant_id stored: " . ($tenantId ?? '(null)') . "\n";
+    echo "  dashboard_url:    " . ($dashUrl ?? '(null)') . "\n";
+    $log('CreateAccount.TenantStored', null, $tenantId !== null);
+
     // ------------------------------------------------------------------------
-    // Step 2 — CreateAccount AGAIN (idempotency proof).
+    // Step 2 — CreateAccount AGAIN (idempotency proof — must return SAME tenant_id).
     // ------------------------------------------------------------------------
     echo "\n--- CreateAccount (retry, should be no-op) ---\n";
     $log('CreateAccount.Retry', swarmz_CreateAccount($baseParams));
 
+    $tenantId2 = \WHMCS\Module\Server\Swarmz\Helpers::getTenantId($serviceId);
+    $log('CreateAccount.Idempotent', null, $tenantId === $tenantId2);
+    if ($tenantId !== $tenantId2) {
+        echo "  drift: first=$tenantId  second=$tenantId2\n";
+    }
+
     // ------------------------------------------------------------------------
-    // Step 3 — ChangePackage (bump credits_per_day).
+    // Step 3 — UsageUpdate immediately after Create (zero-state).
+    // ------------------------------------------------------------------------
+    echo "\n--- UsageUpdate (immediately after create — expect zero) ---\n";
+    $usage = swarmz_UsageUpdate($baseParams);
+    $log('UsageUpdate', $usage);
+    $log('UsageUpdate.ZeroCredits', null, ($usage['creditsUsed'] ?? -1) == 0);
+    $log('UsageUpdate.ZeroCloud',   null, ($usage['cloudUsd']    ?? -1) == 0);
+
+    // ------------------------------------------------------------------------
+    // Step 4 — ChangePackage (bump credits_per_day) and verify entitlements round-trip.
     // ------------------------------------------------------------------------
     echo "\n--- ChangePackage ---\n";
     $bumped = $baseParams;
-    $bumped['configoption1'] = '10';
-    $bumped['configoption3'] = '25';
+    $bumped['configoption1'] = '10';        // credits_per_day
+    $bumped['configoption3'] = '25';        // max_projects
+    $bumped['configoption5'] = 'small';     // max_compute_size
     $log('ChangePackage', swarmz_ChangePackage($bumped));
 
     // ------------------------------------------------------------------------
-    // Step 4 — UsageUpdate (may return note=metrics_unavailable on the staging
-    // server; that's still a success outcome).
-    // ------------------------------------------------------------------------
-    echo "\n--- UsageUpdate ---\n";
-    $log('UsageUpdate', swarmz_UsageUpdate($baseParams));
-
-    // ------------------------------------------------------------------------
-    // Step 5 — SSO.
+    // Step 5 — SSO and verify the redirect host (must be either custom domain
+    // or <slug>.swarmz.app).
     // ------------------------------------------------------------------------
     echo "\n--- ServiceSingleSignOn ---\n";
-    $log('ServiceSingleSignOn', swarmz_ServiceSingleSignOn($baseParams));
+    $sso = swarmz_ServiceSingleSignOn($baseParams);
+    $log('ServiceSingleSignOn', $sso);
+    $redirect = $sso['redirectTo'] ?? '';
+    $hostOk = (bool) preg_match('#^https://([a-z0-9._-]+)/sso\?token=#i', $redirect, $m);
+    if ($hostOk) echo "  redirect host: {$m[1]}\n";
+    $log('SSO.HostShape', null, $hostOk);
 
     // ------------------------------------------------------------------------
     // Step 6 — Suspend.
@@ -193,22 +426,50 @@ namespace {
     $log('SuspendAccount.Retry', swarmz_SuspendAccount($baseParams));
 
     // ------------------------------------------------------------------------
-    // Step 8 — Unsuspend.
+    // Step 8 — SSO while suspended (must FAIL with a clear reason).
+    // ------------------------------------------------------------------------
+    echo "\n--- ServiceSingleSignOn (while suspended — expect failure) ---\n";
+    $ssoSuspended = swarmz_ServiceSingleSignOn($baseParams);
+    $log('SSO.WhileSuspended', $ssoSuspended, ($ssoSuspended['success'] ?? false) === false);
+
+    // ------------------------------------------------------------------------
+    // Step 9 — Unsuspend.
     // ------------------------------------------------------------------------
     echo "\n--- UnsuspendAccount ---\n";
     $log('UnsuspendAccount', swarmz_UnsuspendAccount($baseParams));
 
     // ------------------------------------------------------------------------
-    // Step 9 — Terminate.
+    // Step 10 — SSO works again post-unsuspend.
+    // ------------------------------------------------------------------------
+    echo "\n--- ServiceSingleSignOn (post-unsuspend — works again) ---\n";
+    $log('SSO.PostUnsuspend', swarmz_ServiceSingleSignOn($baseParams));
+
+    // ------------------------------------------------------------------------
+    // Step 11 — Terminate.
     // ------------------------------------------------------------------------
     echo "\n--- TerminateAccount ---\n";
     $log('TerminateAccount', swarmz_TerminateAccount($baseParams));
 
     // ------------------------------------------------------------------------
-    // Step 10 — Terminate AGAIN (idempotent — already gone).
+    // Step 12 — Terminate AGAIN (idempotent — already gone).
     // ------------------------------------------------------------------------
     echo "\n--- TerminateAccount (retry, should still succeed) ---\n";
     $log('TerminateAccount.Retry', swarmz_TerminateAccount($baseParams));
+
+    // ------------------------------------------------------------------------
+    // Step 13 — Re-Create after terminate (re-provision contract: fresh tenant).
+    // ------------------------------------------------------------------------
+    echo "\n--- CreateAccount (after terminate — fresh tenant) ---\n";
+    $log('CreateAccount.PostTerminate', swarmz_CreateAccount($baseParams));
+    $tenantId3 = \WHMCS\Module\Server\Swarmz\Helpers::getTenantId($serviceId);
+    echo "  new tenant_id: " . ($tenantId3 ?? '(null)') . "\n";
+    // Contract: after terminate + re-create, the module's stored tenant_id MUST
+    // be different from the original (the backend hard-deletes the workspace).
+    $log('CreateAccount.PostTerminate.FreshTenant', null, $tenantId3 !== null && $tenantId3 !== $tenantId);
+
+    // Cleanup: terminate this final tenant too, so the smoke run leaves no
+    // workspace behind (the enterprise account is torn down by the runner).
+    swarmz_TerminateAccount($baseParams);
 
     // ------------------------------------------------------------------------
     // Tally.
