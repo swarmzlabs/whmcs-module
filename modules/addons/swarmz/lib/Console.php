@@ -3,7 +3,7 @@
  * Swarmz Reseller Console — admin dashboard renderer.
  *
  * Joins WHMCS's own service records (which customer, which product/plan, which
- * tenant) to ONE account-wide /enterprise-usage call (live credit + cloud
+ * tenant) to ONE account-wide /platform-usage call (live credit + cloud
  * spend per workspace) and renders the result. The usage call returns
  * usage.by_workspace[] keyed by workspace_id, which is exactly the tenant_id
  * the provisioning module stores on each WHMCS service — so the join is a
@@ -153,7 +153,7 @@ class Console
     }
 
     /**
-     * One account-wide /enterprise-usage call. Returns a tenant_id => usage map
+     * One account-wide /platform-usage call. Returns a tenant_id => usage map
      * plus account totals for the period.
      *
      * @return array{map:array<string,array>,totals:array,period:array}
@@ -162,7 +162,7 @@ class Console
     {
         /** @var \WHMCS\Module\Server\Swarmz\Api $api */
         $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
-        $res = $api->postEnterprise('enterprise-usage', ['period' => $period]);
+        $res = $api->postPlatform('platform-usage', ['period' => $period]);
         $usage = (isset($res['body']['usage']) && is_array($res['body']['usage'])) ? $res['body']['usage'] : [];
 
         $map = [];

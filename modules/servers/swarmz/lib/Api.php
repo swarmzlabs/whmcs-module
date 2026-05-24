@@ -2,7 +2,7 @@
 /**
  * Swarmz WHMCS Module - HTTP API Client
  *
- * Thin client around the swarmz public enterprise API. Sends Bearer-auth'd
+ * Thin client around the swarmz public platform API. Sends Bearer-auth'd
  * JSON requests, parses JSON responses, and translates non-2xx bodies into
  * SwarmzApiException with the {error, reason} pair extracted.
  *
@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -58,26 +58,26 @@ class Api
     }
 
     /**
-     * Convenience POST to a single-purpose enterprise endpoint.
+     * Convenience POST to a single-purpose platform endpoint.
      *
-     * @param string $endpoint e.g. "enterprise-create" (no leading slash)
+     * @param string $endpoint e.g. "platform-create" (no leading slash)
      * @param array  $body     Request body (will be JSON-encoded)
      * @return array{statusCode:int, body:array} tuple
      */
-    public function postEnterprise(string $endpoint, array $body): array
+    public function postPlatform(string $endpoint, array $body): array
     {
         $path = self::FUNCTIONS_PATH . '/' . ltrim($endpoint, '/');
         return $this->post($path, $body);
     }
 
     /**
-     * Convenience GET to a single-purpose enterprise endpoint.
+     * Convenience GET to a single-purpose platform endpoint.
      *
-     * @param string $endpoint e.g. "enterprise-usage"
+     * @param string $endpoint e.g. "platform-usage"
      * @param array  $query    Querystring params
      * @return array{statusCode:int, body:array} tuple
      */
-    public function getEnterprise(string $endpoint, array $query = []): array
+    public function getPlatform(string $endpoint, array $query = []): array
     {
         $path = self::FUNCTIONS_PATH . '/' . ltrim($endpoint, '/');
         return $this->get($path, $query);

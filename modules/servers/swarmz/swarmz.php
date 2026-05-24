@@ -3,18 +3,18 @@
  * Swarmz WHMCS Provisioning Module
  *
  * Thin server module for reselling swarmz workspaces from WHMCS. Talks only to
- * the swarmz public enterprise API (api.swarmz.net by default) — all business
+ * the swarmz public platform API (api.swarmz.net by default) — all business
  * logic is server-side.
  *
  * Required endpoints (single-purpose, see reseller-functions-rewrite.md §9):
- *   POST /functions/v1/enterprise-create
- *   POST /functions/v1/enterprise-plan
- *   POST /functions/v1/enterprise-topup
- *   POST /functions/v1/enterprise-suspend
- *   POST /functions/v1/enterprise-unsuspend
- *   POST /functions/v1/enterprise-terminate
- *   POST /functions/v1/enterprise-usage
- *   POST /functions/v1/enterprise-sso
+ *   POST /functions/v1/platform-create
+ *   POST /functions/v1/platform-plan
+ *   POST /functions/v1/platform-topup
+ *   POST /functions/v1/platform-suspend
+ *   POST /functions/v1/platform-unsuspend
+ *   POST /functions/v1/platform-terminate
+ *   POST /functions/v1/platform-usage
+ *   POST /functions/v1/platform-sso
  *
  * Auth: every call sends `Authorization: Bearer sk_live_…`, where the key is
  * stored in the WHMCS server "Password" field.
@@ -164,7 +164,7 @@ function swarmz_CreateAccount(array $params)
             'entitlements' => $entitlements,
         ];
 
-        $result = $api->postEnterprise('enterprise-create', $body);
+        $result = $api->postPlatform('platform-create', $body);
 
         _swarmz_logModuleCall(
             'CreateAccount',
@@ -178,7 +178,7 @@ function swarmz_CreateAccount(array $params)
         $dashboardUrl = isset($resp['dashboard_url']) ? (string) $resp['dashboard_url'] : '';
 
         if ($tenantId === '') {
-            return 'Swarmz: enterprise-create succeeded but no tenant_id was returned.';
+            return 'Swarmz: platform-create succeeded but no tenant_id was returned.';
         }
 
         $productId = isset($params['pid']) ? (int) $params['pid'] : null;
@@ -193,7 +193,7 @@ function swarmz_CreateAccount(array $params)
                     'amount'          => $topup,
                     'idempotency_key' => 'create:' . $serviceId,
                 ];
-                $topupResult = $api->postEnterprise('enterprise-topup', $topupBody);
+                $topupResult = $api->postPlatform('platform-topup', $topupBody);
                 _swarmz_logModuleCall('CreateAccount.InitialTopup', $topupBody, $topupResult['body'], $api->maskedKey());
             } catch (\Throwable $e) {
                 // Don't fail the whole provision because the top-up errored —
@@ -219,7 +219,7 @@ function swarmz_CreateAccount(array $params)
  */
 function swarmz_SuspendAccount(array $params)
 {
-    return _swarmz_simpleLifecycle('SuspendAccount', 'enterprise-suspend', $params);
+    return _swarmz_simpleLifecycle('SuspendAccount', 'platform-suspend', $params);
 }
 
 /**
@@ -230,7 +230,7 @@ function swarmz_SuspendAccount(array $params)
  */
 function swarmz_UnsuspendAccount(array $params)
 {
-    return _swarmz_simpleLifecycle('UnsuspendAccount', 'enterprise-unsuspend', $params);
+    return _swarmz_simpleLifecycle('UnsuspendAccount', 'platform-unsuspend', $params);
 }
 
 /**
@@ -241,7 +241,7 @@ function swarmz_UnsuspendAccount(array $params)
  */
 function swarmz_TerminateAccount(array $params)
 {
-    return _swarmz_simpleLifecycle('TerminateAccount', 'enterprise-terminate', $params);
+    return _swarmz_simpleLifecycle('TerminateAccount', 'platform-terminate', $params);
 }
 
 /**
@@ -270,7 +270,7 @@ function swarmz_ChangePackage(array $params)
             $body['tenant_id'] = $tenantId;
         }
 
-        $result = $api->postEnterprise('enterprise-plan', $body);
+        $result = $api->postPlatform('platform-plan', $body);
         _swarmz_logModuleCall('ChangePackage', $body, $result['body'], $api->maskedKey());
 
         return 'success';
@@ -314,7 +314,7 @@ function swarmz_AdminSingleSignOn(array $params)
 /**
  * Return current-period usage for the workspace.
  *
- * The live /enterprise-usage endpoint returns the shape:
+ * The live /platform-usage endpoint returns the shape:
  *   { ok: true, usage: {
  *       credits_used: number,
  *       usd_credits:  number,
@@ -386,7 +386,7 @@ function swarmz_UsageUpdate(array $params)
             'period'       => 'current_month',
         ];
 
-        $result = $api->postEnterprise('enterprise-usage', $body);
+        $result = $api->postPlatform('platform-usage', $body);
         $resp = $result['body'];
 
         _swarmz_logModuleCall('UsageUpdate', $body, $resp, $api->maskedKey());
@@ -563,19 +563,19 @@ function swarmz_ClientArea(array $params)
 
 // =========================================================================
 // Optional: TestConnection — wired so the WHMCS server form's "Test Connection"
-// button does a real liveness call against /enterprise-usage (read-only).
+// button does a real liveness call against /platform-usage (read-only).
 // =========================================================================
 
 /**
  * Server connectivity test from the WHMCS Servers form.
  *
- * Strategy: hit /enterprise-sso with a deliberately-non-existent tenant_id.
+ * Strategy: hit /platform-sso with a deliberately-non-existent tenant_id.
  * The endpoint requires a valid bearer key BEFORE it looks up the tenant, so
  * the auth check fires first. We then expect a 404 (tenant_not_found) or
  * similar "key valid, tenant missing" reply — that proves connectivity AND
  * key validity in a single round-trip without any side effects.
  *
- * We deliberately avoid /enterprise-usage here: that endpoint is read-only
+ * We deliberately avoid /platform-usage here: that endpoint is read-only
  * but its underlying view is currently incomplete on the deployed server,
  * so it's not a reliable liveness probe.
  *
@@ -602,7 +602,7 @@ function swarmz_TestConnection(array $params)
         // (UUID column), so this short-circuits to "not found".
         $body = ['tenant_id' => '00000000-0000-0000-0000-000000000000'];
         try {
-            $result = $api->postEnterprise('enterprise-sso', $body);
+            $result = $api->postPlatform('platform-sso', $body);
             _swarmz_logModuleCall(
                 'TestConnection',
                 ['baseUrl' => $api->getBaseUrl()],
@@ -648,7 +648,7 @@ function swarmz_TestConnection(array $params)
  * Run a simple POST-and-done lifecycle action (suspend/unsuspend/terminate).
  *
  * @param string $hookName e.g. "SuspendAccount"
- * @param string $endpoint e.g. "enterprise-suspend"
+ * @param string $endpoint e.g. "platform-suspend"
  * @param array  $params
  * @return string "success" or error string
  */
@@ -667,7 +667,7 @@ function _swarmz_simpleLifecycle(string $hookName, string $endpoint, array $para
             $body['tenant_id'] = $tenantId;
         }
 
-        $result = $api->postEnterprise($endpoint, $body);
+        $result = $api->postPlatform($endpoint, $body);
         _swarmz_logModuleCall($hookName, $body, $result['body'], $api->maskedKey());
 
         return 'success';
@@ -686,7 +686,7 @@ function _swarmz_simpleLifecycle(string $hookName, string $endpoint, array $para
 }
 
 /**
- * Run /enterprise-sso and return the WHMCS-shaped result array.
+ * Run /platform-sso and return the WHMCS-shaped result array.
  *
  * @param array $params
  * @return array{success: bool, redirectTo?: string, errorMsg?: string}
@@ -706,7 +706,7 @@ function _swarmz_doSso(array $params): array
             $body['tenant_id'] = $tenantId;
         }
 
-        $result = $api->postEnterprise('enterprise-sso', $body);
+        $result = $api->postPlatform('platform-sso', $body);
         $resp = $result['body'];
 
         _swarmz_logModuleCall('SSO', $body, $resp, $api->maskedKey());

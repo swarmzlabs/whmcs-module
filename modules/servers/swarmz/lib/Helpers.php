@@ -61,7 +61,7 @@ class Helpers
      *   7 default_credits_topup    ""  → 0   (consumed at create-time only)
      *
      * `default_credits_topup` is NOT an entitlement; it stays in $params and is
-     * applied by CreateAccount via /enterprise-topup. We strip it from the
+     * applied by CreateAccount via /platform-topup. We strip it from the
      * returned array.
      *
      * @return array<string,mixed>
@@ -253,7 +253,7 @@ class Helpers
     }
 
     /**
-     * Build the WHU object passed to /enterprise-create.
+     * Build the WHU object passed to /platform-create.
      */
     public static function buildWhu(array $params): array
     {

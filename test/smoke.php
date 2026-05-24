@@ -2,7 +2,7 @@
 /**
  * Swarmz WHMCS module — live API smoke test.
  *
- * Runs every WHMCS hook against the real swarmz enterprise API and asserts
+ * Runs every WHMCS hook against the real swarmz platform API and asserts
  * the response shape + state transitions a hosting company would see.
  * Exercises:
  *   - swarmz_TestConnection
@@ -288,7 +288,7 @@ namespace {
     $productId   = (int)    (getenv('SWARMZ_TEST_PRODUCT_ID') ?: 1);
 
     if ($apiKey === '') {
-        fwrite(STDERR, "Set SWARMZ_API_KEY to an sk_live_… key issued for an active enterprise account.\n");
+        fwrite(STDERR, "Set SWARMZ_API_KEY to an sk_live_… key issued for an active platform account.\n");
         exit(2);
     }
 
@@ -468,7 +468,7 @@ namespace {
     $log('CreateAccount.PostTerminate.FreshTenant', null, $tenantId3 !== null && $tenantId3 !== $tenantId);
 
     // Cleanup: terminate this final tenant too, so the smoke run leaves no
-    // workspace behind (the enterprise account is torn down by the runner).
+    // workspace behind (the platform account is torn down by the runner).
     swarmz_TerminateAccount($baseParams);
 
     // ------------------------------------------------------------------------

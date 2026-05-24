@@ -3,7 +3,7 @@
  * Swarmz Reseller Console — WHMCS Addon Module
  *
  * The activatable companion to the Swarmz *provisioning* (server) module.
- * Swarmz exposes reselling over its enterprise API; this console is where the
+ * Swarmz exposes reselling over its platform API; this console is where the
  * host fine-tunes and translates that for their brand — the host-side knobs we
  * deliberately keep OFF the Swarmz dashboard to keep it tidy — and where the
  * host sees, in one place, which customer is on which plan and the live
@@ -48,20 +48,20 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.1.0',
+        'version'     => '1.2.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
                 'Type'         => 'text',
                 'Size'         => '40',
                 'Default'      => 'https://api.swarmz.net',
-                'Description'  => 'Swarmz enterprise API base. Leave as default unless Swarmz gave you a private endpoint.',
+                'Description'  => 'Swarmz platform API base. Leave as default unless Swarmz gave you a private endpoint.',
             ],
             'API Key' => [
                 'FriendlyName' => 'API Key',
                 'Type'         => 'password',
                 'Size'         => '50',
-                'Description'  => 'Your <code>sk_live_…</code> enterprise key. Set it here once — the provisioning (server) module automatically reuses it whenever its own Password field is left blank.',
+                'Description'  => 'Your <code>sk_live_…</code> platform key. Set it here once — the provisioning (server) module automatically reuses it whenever its own Password field is left blank.',
             ],
             'Editor Button Label' => [
                 'FriendlyName' => 'Editor Button Label',

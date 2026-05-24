@@ -5,6 +5,30 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-05-24
+
+Renamed to match the Swarmz **Platform** API. The reselling product
+formerly called "Enterprise" is now "Platform", and its API endpoints
+were renamed `enterprise-*` → `platform-*`.
+
+### Changed
+- All lifecycle, SSO, top-up, and usage calls now target the renamed
+  `/functions/v1/platform-*` endpoints (`platform-create`,
+  `platform-plan`, `platform-topup`, `platform-suspend`,
+  `platform-unsuspend`, `platform-terminate`, `platform-usage`,
+  `platform-sso`) across the provisioning (server) module, the Reseller
+  Console addon, and the smoke test.
+- "Enterprise" branding in module descriptions, config-field help text,
+  comments, and `README.md` updated to "Platform" (e.g. "Swarmz platform
+  API", "active Swarmz platform account").
+- `lib/Api.php`: bumped `Api::VERSION` to `1.2.0` (sent in the
+  `User-Agent` header).
+
+Stored data values and WHMCS-internal identifiers are unchanged: the
+`Swarmz Tenant ID` / `Swarmz Dashboard URL` custom fields, the
+`external_ref = whmcs:<serviceid>` format, and the `swarmz` addon module
+name all stay the same.
+
 ## [1.0.2] - 2026-05-23
 
 End-to-end verification pass against the live deployed `enterprise-*`
@@ -47,7 +71,7 @@ re-create) pass against the real backend.
 ### Added
 - `docs/HOSTING-COMPANY-ONBOARDING.md`: a full 11-section step-by-step
   onboarding guide for hosting providers adopting the module. Covers
-  enterprise signup, key issuance, module install, server +
+  platform signup, key issuance, module install, server +
   product config, customer experience, billing reconciliation
   (wholesale invoicing + dunning), support escalation, white-label
   customisation, and a troubleshooting matrix with the exact error
