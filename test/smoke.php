@@ -403,7 +403,7 @@ namespace {
 
     // ------------------------------------------------------------------------
     // Step 5 — SSO and verify the redirect host (must be either custom domain
-    // or <slug>.swarmz.app).
+    // or <slug>.swarmz.net).
     // ------------------------------------------------------------------------
     echo "\n--- ServiceSingleSignOn ---\n";
     $sso = swarmz_ServiceSingleSignOn($baseParams);

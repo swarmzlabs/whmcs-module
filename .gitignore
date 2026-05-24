@@ -31,6 +31,9 @@ downloads/
 templates_c/
 modules/servers/swarmz/logs/
 
+# Local tooling (not shipped, not tracked)
+scripts/
+
 # Build artifacts
 *.zip
 *.tar.gz
