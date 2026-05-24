@@ -5,6 +5,30 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-05-24
+
+Verification release. Re-validated every module API call against the
+deployed Swarmz **Platform** edge functions after the Enterprise→Platform
+rename — endpoint names, HTTP methods, request fields, the
+`Authorization: Bearer sk_live_…` auth, the
+`https://api.swarmz.net/functions/v1` base URL, and every response field the
+module reads all match the live backend. **No functional changes** — a safe
+no-op upgrade from 1.2.0.
+
+### Verified
+- Lifecycle (`platform-create`, `platform-suspend`, `platform-unsuspend`,
+  `platform-terminate`), plan changes (`platform-plan`), credit top-ups
+  (`platform-topup`), usage (`platform-usage` — per-service and the Reseller
+  Console account-wide roll-up incl. the `by_workspace` breakdown), and SSO
+  (`platform-sso`) all align with the deployed contracts.
+- `external_ref = whmcs:<serviceid>` and the `tenant_id` workspace UUID are
+  the only tenant identifiers sent; the platform account is resolved
+  server-side from the API key (no `platform_account_id` in request bodies).
+
+### Changed
+- `lib/Api.php`: bumped `Api::VERSION` to `1.2.1` (sent in `User-Agent`).
+- Reseller Console addon `version` bumped to `1.2.1`.
+
 ## [1.2.0] - 2026-05-24
 
 Renamed to match the Swarmz **Platform** API. The reselling product
