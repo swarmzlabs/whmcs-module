@@ -45,6 +45,14 @@ custom domains, max compute size, cloud budget cap, and initial top-up.
 against `enterprise-sso` with a non-existent tenant id (read-only, no side
 effects).
 
+**Admin: Reseller Console** — an activatable WHMCS *addon* module (Setup → Addon
+Modules) that gives you one screen showing every customer's plan and their live
+credit + cloud usage (your wholesale cost), with a period switcher. It's also
+where you set the host-side presentation kept off the Swarmz dashboard — SSO
+button label, credit terminology, whether to show AI/cloud spend to clients,
+support link — and where you set the API key once (the provisioning module
+reuses it automatically).
+
 ---
 
 ## Authentication
@@ -70,9 +78,12 @@ string shown to a client or admin.
 
 Download the packaged module ZIP from the
 [releases page](https://github.com/swarmzlabs/whmcs-module/releases/latest) and
-unzip it at your WHMCS root, so it lands at
-`<whmcs-root>/modules/servers/swarmz/`. There is no activation step, database
-migration, or addon to enable.
+unzip it at your WHMCS root. It lays down two modules:
+
+- `<whmcs-root>/modules/servers/swarmz/` — the provisioning module (no
+  activation step; selected per-product).
+- `<whmcs-root>/modules/addons/swarmz/` — the Reseller Console (activate it
+  under **Setup → Addon Modules**, then set your API key in its config).
 
 The full hosting-company onboarding guide — enterprise signup, key issuance,
 server and product configuration, first customer order, and billing

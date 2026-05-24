@@ -550,6 +550,13 @@ function swarmz_ClientArea(array $params)
             'cloudUsd'      => $usage['cloudUsd']      ?? 0,
             'usdCredits'    => $usage['usdCredits']    ?? 0,
             'projectsCount' => $usage['projectsCount'], // may be null — template handles it
+            // Host-configurable presentation, set in the Reseller Console addon
+            // module (falls back to sensible defaults when the addon is absent).
+            'editorButtonLabel' => Helpers::editorButtonLabel(),
+            'creditTerm'        => Helpers::creditTerm(),
+            'showAiSpend'       => Helpers::showAiSpend(),
+            'showCloudSpend'    => Helpers::showCloudSpend(),
+            'supportUrl'        => Helpers::supportUrl(),
         ],
     ];
 }

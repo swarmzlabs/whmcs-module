@@ -36,6 +36,9 @@ class Helpers
     /** Default base URL used if the WHMCS server hostname is blank. */
     const DEFAULT_API_BASE_URL = 'https://api.swarmz.net';
 
+    /** Companion addon module name — the Reseller Console — for host-side settings. */
+    const ADDON_MODULE = 'swarmz';
+
     /**
      * Build the WHMCS-side idempotency key passed to swarmz as `external_ref`.
      * Format: "whmcs:<serviceid>". A retried provision uses the same key.
@@ -121,7 +124,9 @@ class Helpers
         $host = is_string($host) ? trim($host) : '';
 
         if ($host === '') {
-            return self::DEFAULT_API_BASE_URL;
+            // Fall back to the Reseller Console addon's configured base URL, then the default.
+            $addonBase = trim((string) self::addonSetting('API Base URL', ''));
+            return $addonBase !== '' ? rtrim($addonBase, '/') : self::DEFAULT_API_BASE_URL;
         }
 
         // Accept full URLs OR bare hostnames. Default scheme is https unless serversecure says otherwise.
@@ -148,6 +153,13 @@ class Helpers
         if ($key === '' && isset($params['password']) && is_string($params['password'])) {
             $key = trim($params['password']);
         }
+        // Final fallback: the key set once in the Reseller Console addon module.
+        // Lets a host configure the key in ONE place and leave the WHMCS server
+        // Password field blank.
+        if ($key === '') {
+            $addonKey = self::addonSetting('API Key', '');
+            $key = is_string($addonKey) ? trim($addonKey) : '';
+        }
         return $key;
     }
 
@@ -159,6 +171,85 @@ class Helpers
         $apiKey = self::resolveApiKey($params);
         $baseUrl = self::resolveBaseUrl($params);
         return new Api($apiKey, $baseUrl);
+    }
+
+    // ---------------- Reseller Console (addon) settings ----------------
+    //
+    // The companion addon module (modules/addons/swarmz) stores host-side
+    // settings in tbladdonmodules (module='swarmz', setting=<FriendlyName>).
+    // These readers let the provisioning module honor those settings — the API
+    // key/base-URL fallback above and the client-area presentation below —
+    // while still working fine if the addon is absent (every reader defaults).
+
+    /**
+     * Read a saved Reseller Console setting. Returns $default when there is no
+     * stored row (addon not installed/configured); otherwise returns the stored
+     * value verbatim — which may be '' (important for unticked yes/no fields).
+     *
+     * @param string $key
+     * @param mixed  $default
+     * @return mixed
+     */
+    public static function addonSetting(string $key, $default = null)
+    {
+        try {
+            $row = Capsule::table('tbladdonmodules')
+                ->where('module', self::ADDON_MODULE)
+                ->where('setting', $key)
+                ->first(['value']);
+            if (!$row) {
+                return $default;
+            }
+            return $row->value;
+        } catch (\Throwable $e) {
+            return $default;
+        }
+    }
+
+    /** SSO button label shown to clients (host-brandable). */
+    public static function editorButtonLabel(): string
+    {
+        $v = trim((string) self::addonSetting('Editor Button Label', 'Open AI Editor'));
+        return $v !== '' ? $v : 'Open AI Editor';
+    }
+
+    /** What to call "credits" in the client area. */
+    public static function creditTerm(): string
+    {
+        $v = trim((string) self::addonSetting('Credit Term', 'credits'));
+        return $v !== '' ? $v : 'credits';
+    }
+
+    /** Whether to show AI USD spend to the client (default: yes). */
+    public static function showAiSpend(): bool
+    {
+        return self::addonBool('Show AI Spend To Client', true);
+    }
+
+    /** Whether to show cloud USD spend to the client (default: yes). */
+    public static function showCloudSpend(): bool
+    {
+        return self::addonBool('Show Cloud Spend To Client', true);
+    }
+
+    /** Optional host support URL shown in the client-area panel. */
+    public static function supportUrl(): string
+    {
+        return trim((string) self::addonSetting('Support URL', ''));
+    }
+
+    /**
+     * Interpret a stored yes/no addon setting robustly across WHMCS versions
+     * (which may persist 'on', '1', '' or absent). No row → $default.
+     */
+    private static function addonBool(string $key, bool $default): bool
+    {
+        $raw = self::addonSetting($key, null);
+        if ($raw === null) {
+            return $default;
+        }
+        $v = strtolower(trim((string) $raw));
+        return in_array($v, ['on', '1', 'yes', 'true', 'checked'], true);
     }
 
     /**
