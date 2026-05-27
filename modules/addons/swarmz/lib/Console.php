@@ -103,8 +103,13 @@ class Console
             return $out . '</div>';
         }
 
+        // Consolidated billing summary (purchased vs consumed, rollover/balance,
+        // cloud spend vs cap). Best-effort + auth-aware: see fetchBillingSummary.
+        $billing = $this->fetchBillingSummary();
+
         $out .= $this->renderToolbar($period);
         $out .= $this->renderSummary($services, $usage, $period);
+        $out .= $this->renderBillingSummary($billing, $usage, $services);
         $out .= $this->renderTable($services, $usage);
         $out .= '</div>';
         return $out;
@@ -189,6 +194,38 @@ class Console
         ];
     }
 
+    /**
+     * Fetch the consolidated /platform-billing-summary, which carries the
+     * account-level purchased-vs-consumed + upcoming-invoice picture that
+     * /platform-usage alone can't give.
+     *
+     * AUTH CAVEAT: the deployed platform-billing-summary authenticates the
+     * account *owner's Supabase user JWT*, NOT the sk_live_ platform key we
+     * hold. Called with the key it returns 401/403. We therefore treat an
+     * auth failure as "summary not available over this surface" and degrade to
+     * the platform-usage aggregate (which IS key-authed). If/when the endpoint
+     * gains key-auth, this lights up automatically with no further changes.
+     *
+     * @return array{available:bool,reason:?string,body:array}
+     */
+    private function fetchBillingSummary(): array
+    {
+        try {
+            /** @var \WHMCS\Module\Server\Swarmz\Api $api */
+            $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
+            $res = $api->billingSummary();
+            $body = (isset($res['body']) && is_array($res['body'])) ? $res['body'] : [];
+            return ['available' => true, 'reason' => null, 'body' => $body];
+        } catch (\WHMCS\Module\Server\Swarmz\SwarmzApiException $e) {
+            // 401/403 is the EXPECTED outcome with key auth — degrade quietly.
+            $code = $e->getStatusCode();
+            $reason = ($code === 401 || $code === 403) ? 'key_auth_unsupported' : ('http_' . $code);
+            return ['available' => false, 'reason' => $reason, 'body' => []];
+        } catch (\Throwable $e) {
+            return ['available' => false, 'reason' => 'unavailable', 'body' => []];
+        }
+    }
+
     // ------------------------------------------------------------- render
 
     private function renderToolbar(string $period): string
@@ -245,6 +282,208 @@ class Console
         }
         $html .= '</div>';
         return $html;
+    }
+
+    /**
+     * Render the consolidated billing summary: credits purchased vs consumed,
+     * rollover/balance, and cloud spend vs cap. Laid out as its own card row
+     * beneath the headline cards.
+     *
+     * Two modes:
+     *   - available  → render the real platform-billing-summary fields
+     *     (usage.credits_used/usd_credits/cloud_usd + upcoming invoice).
+     *   - degraded   → key-auth can't reach the owner-only summary; render what
+     *     we CAN derive from platform-usage (consumed credits, cloud spend) and
+     *     cloud-spend-vs-cap from the WHMCS-configured caps, plus a short note.
+     *
+     * @param array{available:bool,reason:?string,body:array} $billing
+     * @param array $usage    platform-usage aggregate (always available)
+     * @param array<int,\stdClass> $services
+     */
+    private function renderBillingSummary(array $billing, array $usage, array $services): string
+    {
+        $title = '<h3 class="swz-section-title">Billing summary</h3>';
+
+        if ($billing['available'] && !empty($billing['body'])) {
+            $b = $billing['body'];
+            $bUsage = (isset($b['usage']) && is_array($b['usage'])) ? $b['usage'] : [];
+            $consumedCredits = (float) ($bUsage['credits_used'] ?? 0);
+            $consumedUsd = (float) ($bUsage['usd_credits'] ?? 0);
+            $cloudUsd = (float) ($bUsage['cloud_usd'] ?? 0);
+
+            // Upcoming invoice → the period's accruing wholesale charge.
+            $upcoming = (isset($b['upcoming']) && is_array($b['upcoming'])) ? $b['upcoming'] : null;
+            $purchasedLabel = '—';
+            if ($upcoming !== null) {
+                $cents = (float) ($upcoming['amount_due_cents'] ?? 0);
+                $cur = strtoupper((string) ($upcoming['currency'] ?? 'USD'));
+                $purchasedLabel = $this->moneyCur($cents / 100, $cur);
+            }
+
+            $cards = [
+                ['Credits consumed', number_format($consumedCredits), '#7c3aed'],
+                ['AI spend (consumed)', $this->money($consumedUsd), '#0891b2'],
+                ['Cloud spend', $this->money($cloudUsd), '#ca8a04'],
+                ['Upcoming invoice', $purchasedLabel, '#16a34a'],
+            ];
+
+            $html = $title . '<div class="swz-cards">';
+            foreach ($cards as $c) {
+                $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $this->esc($c[1]) . '</div>'
+                    . '<div class="swz-card-l">' . $this->esc($c[0]) . '</div></div>';
+            }
+            $html .= '</div>';
+
+            // Recent invoices, if present.
+            $invoices = (isset($b['invoices']) && is_array($b['invoices'])) ? $b['invoices'] : [];
+            if (!empty($invoices)) {
+                $html .= $this->renderInvoices($invoices);
+            }
+            return $html;
+        }
+
+        // ── Degraded mode: derive from platform-usage + configured caps. ──────
+        $totals = isset($usage['totals']) && is_array($usage['totals']) ? $usage['totals'] : [];
+        $consumedCredits = (float) ($totals['credits'] ?? 0);
+        $consumedUsd = (float) ($totals['ai'] ?? 0);
+        $cloudUsd = (float) ($totals['cloud'] ?? 0);
+
+        // Aggregate cloud cap across active services that have one configured.
+        $capInfo = $this->aggregateCloudCap($services);
+
+        $cloudCard = $this->money($cloudUsd);
+        if ($capInfo['cap'] > 0) {
+            $cloudCard = $this->money($cloudUsd) . ' <span style="color:#9ca3af;font-size:15px;">/ ' . $this->money($capInfo['cap']) . ' cap</span>';
+        }
+
+        $cards = [
+            ['Credits consumed', number_format($consumedCredits), '#7c3aed'],
+            ['AI spend (consumed)', $this->money($consumedUsd), '#0891b2'],
+            ['Cloud spend vs cap', $cloudCard, '#ca8a04'],
+        ];
+
+        $html = $title . '<div class="swz-cards">';
+        foreach ($cards as $c) {
+            $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $c[1] . '</div>'
+                . '<div class="swz-card-l">' . $this->esc($c[0]) . '</div></div>';
+        }
+        $html .= '</div>';
+
+        // Explain why purchased/rollover/upcoming aren't shown here.
+        $note = 'Credits <strong>purchased</strong>, rollover balance and the upcoming invoice live on your '
+            . '<strong>Swarmz account billing page</strong> (owner sign-in) &mdash; that summary is tied to your '
+            . 'Swarmz owner login, not the reseller API key, so it can&rsquo;t be pulled into WHMCS. '
+            . 'The figures above are your live <strong>consumption</strong> for the selected period; '
+            . 'cloud spend is shown against the total cap configured on your active plans.';
+        $html .= '<div class="swz-notice" style="background:#f8fafc;border:1px solid #e5e7eb;color:#475569;">' . $note . '</div>';
+
+        return $html;
+    }
+
+    /**
+     * Sum the configured cloud_budget_cap (config option 6) across the active
+     * swarmz services. Returns { cap:float, count:int } where cap is the total
+     * configured ceiling (0 when none of the active plans set one).
+     *
+     * @param array<int,\stdClass> $services
+     * @return array{cap:float,count:int}
+     */
+    private function aggregateCloudCap(array $services): array
+    {
+        $cap = 0.0;
+        $count = 0;
+        $byProduct = [];
+        try {
+            foreach ($services as $s) {
+                if (strtolower((string) $s->status) !== 'active') {
+                    continue;
+                }
+                $serviceId = (int) $s->serviceid;
+                if ($serviceId <= 0) {
+                    continue;
+                }
+                // cloud_budget_cap is module config option 6. WHMCS stores
+                // module ConfigOptions (as defined by swarmz_ConfigOptions) in
+                // tblhosting.configoption6 — NOT the configurable-options tables.
+                $val = $this->serviceModuleConfigOption($serviceId, 6);
+                if ($val === null || $val === '' || !is_numeric($val)) {
+                    continue;
+                }
+                $f = (float) $val;
+                if ($f > 0) {
+                    $cap += $f;
+                    $count++;
+                }
+            }
+        } catch (\Throwable $e) {
+            // best-effort; return whatever we accumulated
+        }
+        return ['cap' => $cap, 'count' => $count];
+    }
+
+    /**
+     * Read a service's Nth module config option (1-based) — the values defined
+     * by swarmz_ConfigOptions() and stored by WHMCS in tblhosting.configoptionN.
+     * Returns null when the column is empty/absent.
+     *
+     * @return string|null
+     */
+    private function serviceModuleConfigOption(int $serviceId, int $n): ?string
+    {
+        $col = 'configoption' . $n;
+        try {
+            $row = Capsule::table('tblhosting')->where('id', $serviceId)->first([$col]);
+            if (!$row || !isset($row->{$col})) {
+                return null;
+            }
+            $v = trim((string) $row->{$col});
+            return $v === '' ? null : $v;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Render a compact recent-invoices table from platform-billing-summary's
+     * `invoices` array.
+     *
+     * @param array<int,array> $invoices
+     */
+    private function renderInvoices(array $invoices): string
+    {
+        $rows = '';
+        $shown = 0;
+        foreach ($invoices as $inv) {
+            if ($shown >= 6) {
+                break;
+            }
+            $shown++;
+            $status = (string) ($inv['status'] ?? '');
+            $cur = strtoupper((string) ($inv['currency'] ?? 'USD'));
+            $due = (float) ($inv['amount_due_cents'] ?? 0) / 100;
+            $paid = (float) ($inv['amount_paid_cents'] ?? 0) / 100;
+            $when = '';
+            if (!empty($inv['created_at'])) {
+                $when = substr((string) $inv['created_at'], 0, 10);
+            }
+            $link = '';
+            if (!empty($inv['hosted_invoice_url'])) {
+                $link = '<a href="' . $this->esc((string) $inv['hosted_invoice_url']) . '" target="_blank" rel="noopener">View</a>';
+            }
+            $rows .= '<tr>'
+                . '<td>' . $this->esc($when) . '</td>'
+                . '<td>' . $this->statusBadge($status) . '</td>'
+                . '<td class="swz-num">' . $this->moneyCur($due, $cur) . '</td>'
+                . '<td class="swz-num">' . $this->moneyCur($paid, $cur) . '</td>'
+                . '<td>' . $link . '</td>'
+                . '</tr>';
+        }
+        if ($rows === '') {
+            return '';
+        }
+        return '<div class="swz-tablewrap" style="margin-top:8px;"><table class="swz-table">'
+            . '<thead><tr><th>Date</th><th>Status</th><th class="swz-num">Due</th><th class="swz-num">Paid</th><th></th></tr></thead>'
+            . '<tbody>' . $rows . '</tbody></table></div>';
     }
 
     private function renderTable(array $services, array $usage): string
@@ -355,6 +594,20 @@ class Console
         return '$' . number_format($n, 2);
     }
 
+    /**
+     * Money with an explicit currency. USD renders with the $ prefix; any other
+     * currency is suffixed with its ISO code (e.g. "12.00 EUR") so we never
+     * imply USD for a non-USD figure.
+     */
+    private function moneyCur(float $n, string $currency): string
+    {
+        $cur = strtoupper(trim($currency));
+        if ($cur === '' || $cur === 'USD') {
+            return '$' . number_format($n, 2);
+        }
+        return number_format($n, 2) . ' ' . $this->esc($cur);
+    }
+
     private function esc($s): string
     {
         return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
@@ -381,6 +634,7 @@ class Console
 .swarmz-console .swz-btn{display:inline-block;padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;text-decoration:none;font-size:13px;}
 .swarmz-console .swz-btn:hover{background:#f9fafb;}
 .swarmz-console .swz-btn-sm{padding:3px 10px;font-size:12px;}
+.swarmz-console .swz-section-title{margin:18px 0 8px;font-size:15px;font-weight:700;color:#374151;}
 .swarmz-console .swz-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:8px 0 20px;}
 .swarmz-console .swz-card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;}
 .swarmz-console .swz-card-v{font-size:26px;font-weight:700;line-height:1.1;}

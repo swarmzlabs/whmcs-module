@@ -48,7 +48,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.2.1',
+        'version'     => '1.3.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
@@ -94,6 +94,12 @@ function swarmz_config()
                 'Type'         => 'text',
                 'Size'         => '40',
                 'Description'  => 'Optional. A support/help link shown to customers in the client-area panel.',
+            ],
+            'Meter Cron Secret' => [
+                'FriendlyName' => 'Meter Cron Secret',
+                'Type'         => 'password',
+                'Size'         => '50',
+                'Description'  => 'Optional &amp; advanced. If Swarmz gave you a meter-cron secret, the daily WHMCS cron will also nudge Swarmz\'s usage-metering job with it. Leave blank unless instructed — Swarmz normally runs this job itself, and it is NOT authenticated by your API key.',
             ],
         ],
     ];

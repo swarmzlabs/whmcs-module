@@ -98,7 +98,7 @@ function swarmz_ConfigOptions()
             'Type'         => 'text',
             'Size'         => '10',
             'Default'      => '',
-            'Description'  => 'Optional project count cap. Leave empty for unlimited.',
+            'Description'  => 'Project count cap. Empty or <strong>0 = unlimited</strong>; a positive number is a hard cap.',
         ],
         // 4
         'max_custom_domains' => [
@@ -106,7 +106,7 @@ function swarmz_ConfigOptions()
             'Type'         => 'text',
             'Size'         => '10',
             'Default'      => '0',
-            'Description'  => 'Optional custom-domain cap (each domain costs ~$0.10/mo). Default 0.',
+            'Description'  => 'Custom-domain cap (each domain costs ~$0.10/mo). <strong>0 = unlimited</strong>; a positive number is a hard cap. To switch custom domains off entirely, use "Custom domains enabled" below.',
         ],
         // 5
         'max_compute_size' => [
@@ -131,6 +131,42 @@ function swarmz_ConfigOptions()
             'Size'         => '10',
             'Default'      => '0',
             'Description'  => 'Credits granted at provisioning time (one-shot, idempotent on serviceid).',
+        ],
+        // 8
+        'monthly_credits' => [
+            'FriendlyName' => 'Monthly credits (paid grant)',
+            'Type'         => 'text',
+            'Size'         => '10',
+            'Default'      => '0',
+            'Description'  => 'Paid credit grant added each billing cycle (set at provisioning and re-applied on each plan refresh). 0 = none — the plan then runs on the daily free budget only.',
+        ],
+        // 9
+        'rollover_months' => [
+            'FriendlyName' => 'Credit rollover',
+            'Type'         => 'dropdown',
+            // Option keys are the values stored/sent; labels are shown to the admin.
+            'Options'      => [
+                '0' => 'None (reset each cycle)',
+                '1' => '1 month',
+                '2' => '2 months',
+            ],
+            'Default'      => '0',
+            'Description'  => 'How long unused monthly credits carry over before they expire. Applied at the billing-cycle boundary (WHMCS renewal / package change).',
+        ],
+        // 10
+        'max_published_projects' => [
+            'FriendlyName' => 'Max published projects',
+            'Type'         => 'text',
+            'Size'         => '10',
+            'Default'      => '0',
+            'Description'  => 'How many projects can be live (published) at once. <strong>0 = unlimited</strong>; a positive number is a hard cap.',
+        ],
+        // 11
+        'custom_domains_enabled' => [
+            'FriendlyName' => 'Custom domains enabled',
+            'Type'         => 'yesno',
+            'Default'      => 'on',
+            'Description'  => 'Allow this plan to connect custom domains at all. Untick to switch the feature off entirely (independent of the "Max custom domains" cap above).',
         ],
     ];
 }
@@ -273,6 +309,19 @@ function swarmz_ChangePackage(array $params)
         $result = $api->postPlatform('platform-plan', $body);
         _swarmz_logModuleCall('ChangePackage', $body, $result['body'], $api->maskedKey());
 
+        // Roll the credit cycle at the billing boundary. A package change is a
+        // cycle event (new entitlements → reset monthly credits + apply
+        // rollover), so we ask swarmz to refresh the plan anchored to the
+        // service's next-due-date. Idempotent per (tenant, cycle_anchor) on the
+        // server, so a same-day retry is a no-op.
+        //
+        // Best-effort: a refresh failure must NOT fail the package change. We
+        // only have a meaningful workspace to refresh once a tenant_id exists;
+        // skip silently before provisioning.
+        if ($tenantId !== null) {
+            _swarmz_planRefresh($api, $tenantId, Helpers::resolveCycleAnchor($params, $serviceId), 'ChangePackage');
+        }
+
         return 'success';
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('ChangePackage.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
@@ -354,6 +403,16 @@ function swarmz_UsageUpdate(array $params)
         }
     }
 
+    // Plan limits surfaced to the client area (W6.6). Apply the 0 = UNLIMITED
+    // sentinel for domains + published projects (decision D1): null is returned
+    // for "unlimited" so the template can show "∞"/omit the denominator.
+    $domainsLimit = Helpers::unlimitedSentinel($entitlements['max_custom_domains'] ?? 0);
+    $publishedLimit = Helpers::unlimitedSentinel($entitlements['max_published_projects'] ?? 0);
+    $customDomainsEnabled = (bool) ($entitlements['custom_domains_enabled'] ?? true);
+    // Paid monthly grant (0 = none). Surfaced so the client sees their monthly
+    // credit allotment distinctly from the soft cap.
+    $monthlyCredits = (int) ($entitlements['monthly_credits'] ?? 0);
+
     // Not provisioned yet → don't hit the API; return a friendly placeholder
     // so the client area template can render without errors. The endpoint
     // does NOT resolve by external_ref alone — it would silently return the
@@ -361,16 +420,21 @@ function swarmz_UsageUpdate(array $params)
     // client.
     if ($tenantId === null) {
         return [
-            'success'       => true,
-            'creditsUsed'   => 0,
-            'creditsLimit'  => $creditsLimit,
-            'cloudUsd'      => 0.0,
-            'usdCredits'    => 0.0,
-            'projectsCount' => 0,
-            'domainsCount'  => null,
-            'periodStart'   => null,
-            'periodEnd'     => null,
-            'raw'           => [],
+            'success'              => true,
+            'creditsUsed'          => 0,
+            'creditsLimit'         => $creditsLimit,
+            'monthlyCredits'       => $monthlyCredits,
+            'cloudUsd'             => 0.0,
+            'usdCredits'           => 0.0,
+            'projectsCount'        => 0,
+            'domainsCount'         => null,
+            'domainsLimit'         => $domainsLimit,
+            'publishedCount'       => null,
+            'publishedLimit'       => $publishedLimit,
+            'customDomainsEnabled' => $customDomainsEnabled,
+            'periodStart'          => null,
+            'periodEnd'            => null,
+            'raw'                  => [],
         ];
     }
 
@@ -395,19 +459,24 @@ function swarmz_UsageUpdate(array $params)
         $period = isset($usage['period']) && is_array($usage['period']) ? $usage['period'] : [];
 
         return [
-            'success'       => true,
-            'creditsUsed'   => isset($usage['credits_used']) ? (float) $usage['credits_used'] : 0.0,
-            'creditsLimit'  => $creditsLimit,
-            'cloudUsd'      => isset($usage['cloud_usd'])    ? (float) $usage['cloud_usd']    : 0.0,
-            'usdCredits'    => isset($usage['usd_credits'])  ? (float) $usage['usd_credits']  : 0.0,
+            'success'              => true,
+            'creditsUsed'          => isset($usage['credits_used']) ? (float) $usage['credits_used'] : 0.0,
+            'creditsLimit'         => $creditsLimit,
+            'monthlyCredits'       => $monthlyCredits,
+            'cloudUsd'             => isset($usage['cloud_usd'])    ? (float) $usage['cloud_usd']    : 0.0,
+            'usdCredits'           => isset($usage['usd_credits'])  ? (float) $usage['usd_credits']  : 0.0,
             // The live endpoint doesn't return project/domain counts; null tells
             // the template to omit the field rather than show "0".
-            'projectsCount' => null,
-            'domainsCount'  => null,
-            'periodStart'   => $period['from']  ?? null,
-            'periodEnd'     => $period['to']    ?? null,
-            'periodLabel'   => $period['label'] ?? null,
-            'raw'           => $usage,
+            'projectsCount'        => null,
+            'domainsCount'         => null,
+            'domainsLimit'         => $domainsLimit,
+            'publishedCount'       => null,
+            'publishedLimit'       => $publishedLimit,
+            'customDomainsEnabled' => $customDomainsEnabled,
+            'periodStart'          => $period['from']  ?? null,
+            'periodEnd'            => $period['to']    ?? null,
+            'periodLabel'          => $period['label'] ?? null,
+            'raw'                  => $usage,
         ];
     } catch (SwarmzApiException $e) {
         // `usage_read_failed` is a known soft failure — the metrics view can be
@@ -421,51 +490,87 @@ function swarmz_UsageUpdate(array $params)
             ['error' => $e->getMessage(), 'status' => $e->getStatusCode()],
             $api ? $api->maskedKey() : ''
         );
-        if ($isSoft) {
-            return [
-                'success'       => true,
-                'creditsUsed'   => 0.0,
-                'creditsLimit'  => $creditsLimit,
-                'cloudUsd'      => 0.0,
-                'usdCredits'    => 0.0,
-                'projectsCount' => null,
-                'domainsCount'  => null,
-                'periodStart'   => null,
-                'periodEnd'     => null,
-                'periodLabel'   => null,
-                'raw'           => [],
-                'note'          => 'metrics_unavailable',
-            ];
-        }
-        return [
-            'success'  => false,
-            'errorMsg' => Helpers::formatError($e, $api ? $api->maskedKey() : null),
-            // Carry-through the locally-known values so the template still has
-            // something useful to render even when the API call fails.
-            'creditsUsed'   => 0.0,
-            'creditsLimit'  => $creditsLimit,
-            'cloudUsd'      => 0.0,
-            'usdCredits'    => 0.0,
-            'projectsCount' => null,
-            'domainsCount'  => null,
-            'periodStart'   => null,
-            'periodEnd'     => null,
+        // On a soft/hard failure, fall back to the daily-cron usage cache (if
+        // present) so the client area still shows recent numbers rather than
+        // zeros. The plan limits always come from the local entitlement view.
+        $limits = [
+            'creditsLimit'         => $creditsLimit,
+            'monthlyCredits'       => $monthlyCredits,
+            'domainsLimit'         => $domainsLimit,
+            'publishedLimit'       => $publishedLimit,
+            'customDomainsEnabled' => $customDomainsEnabled,
         ];
+        if ($isSoft) {
+            return _swarmz_usageFromCacheOrZero($serviceId, $limits, true, null, 'metrics_unavailable');
+        }
+        return _swarmz_usageFromCacheOrZero(
+            $serviceId,
+            $limits,
+            false,
+            Helpers::formatError($e, $api ? $api->maskedKey() : null)
+        );
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('UsageUpdate.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
-        return [
-            'success'  => false,
-            'errorMsg' => Helpers::formatError($e, $api ? $api->maskedKey() : null),
-            'creditsUsed'   => 0.0,
-            'creditsLimit'  => $creditsLimit,
-            'cloudUsd'      => 0.0,
-            'usdCredits'    => 0.0,
-            'projectsCount' => null,
-            'domainsCount'  => null,
-            'periodStart'   => null,
-            'periodEnd'     => null,
+        $limits = [
+            'creditsLimit'         => $creditsLimit,
+            'monthlyCredits'       => $monthlyCredits,
+            'domainsLimit'         => $domainsLimit,
+            'publishedLimit'       => $publishedLimit,
+            'customDomainsEnabled' => $customDomainsEnabled,
         ];
+        return _swarmz_usageFromCacheOrZero(
+            $serviceId,
+            $limits,
+            false,
+            Helpers::formatError($e, $api ? $api->maskedKey() : null)
+        );
     }
+}
+
+/**
+ * Build a UsageUpdate result from the daily-cron usage cache when a live read
+ * failed, falling back to zeros if there is no cache. Always carries the
+ * locally-known plan limits so the template renders a useful budget view.
+ *
+ * @param int                $serviceId
+ * @param array<string,mixed> $limits  { creditsLimit, monthlyCredits, domainsLimit, publishedLimit, customDomainsEnabled }
+ * @param bool               $success
+ * @param string|null        $errorMsg
+ * @param string|null        $note
+ * @return array
+ */
+function _swarmz_usageFromCacheOrZero(int $serviceId, array $limits, bool $success, ?string $errorMsg = null, ?string $note = null): array
+{
+    $cache = Helpers::getCachedUsage($serviceId);
+    $out = [
+        'success'              => $success,
+        'creditsUsed'          => $cache !== null ? (float) $cache['credits'] : 0.0,
+        'creditsLimit'         => $limits['creditsLimit'] ?? null,
+        'monthlyCredits'       => $limits['monthlyCredits'] ?? 0,
+        'cloudUsd'             => $cache !== null ? (float) $cache['cloud'] : 0.0,
+        'usdCredits'           => $cache !== null ? (float) $cache['ai'] : 0.0,
+        'projectsCount'        => null,
+        'domainsCount'         => null,
+        'domainsLimit'         => $limits['domainsLimit'] ?? null,
+        'publishedCount'       => null,
+        'publishedLimit'       => $limits['publishedLimit'] ?? null,
+        'customDomainsEnabled' => $limits['customDomainsEnabled'] ?? true,
+        'periodStart'          => null,
+        'periodEnd'            => null,
+        'periodLabel'          => null,
+        'raw'                  => [],
+    ];
+    if ($cache !== null) {
+        $out['fromCache'] = true;
+        $out['cachedAt'] = $cache['cached_at'];
+    }
+    if ($errorMsg !== null) {
+        $out['errorMsg'] = $errorMsg;
+    }
+    if ($note !== null) {
+        $out['note'] = $note;
+    }
+    return $out;
 }
 
 // =========================================================================
@@ -541,15 +646,22 @@ function swarmz_ClientArea(array $params)
     return [
         'templatefile' => 'overview',
         'vars' => [
-            'tenantId'      => $tenantId,
-            'dashboardUrl'  => $dashboardUrl,
-            'ssoUrl'        => $ssoUrl,
-            'usage'         => $usage,
-            'creditsUsed'   => $usage['creditsUsed']   ?? 0,
-            'creditsLimit'  => $usage['creditsLimit']  ?? null,
-            'cloudUsd'      => $usage['cloudUsd']      ?? 0,
-            'usdCredits'    => $usage['usdCredits']    ?? 0,
-            'projectsCount' => $usage['projectsCount'], // may be null — template handles it
+            'tenantId'             => $tenantId,
+            'dashboardUrl'         => $dashboardUrl,
+            'ssoUrl'               => $ssoUrl,
+            'usage'                => $usage,
+            'creditsUsed'          => $usage['creditsUsed']   ?? 0,
+            'creditsLimit'         => $usage['creditsLimit']  ?? null,
+            'monthlyCredits'       => $usage['monthlyCredits'] ?? 0,
+            'cloudUsd'             => $usage['cloudUsd']      ?? 0,
+            'usdCredits'           => $usage['usdCredits']    ?? 0,
+            'projectsCount'        => $usage['projectsCount'], // may be null — template handles it
+            // Plan limits (W6.6): null = unlimited (0-sentinel already applied).
+            'domainsCount'         => $usage['domainsCount']   ?? null,
+            'domainsLimit'         => $usage['domainsLimit']   ?? null,
+            'publishedCount'       => $usage['publishedCount'] ?? null,
+            'publishedLimit'       => $usage['publishedLimit'] ?? null,
+            'customDomainsEnabled' => $usage['customDomainsEnabled'] ?? true,
             // Host-configurable presentation, set in the Reseller Console addon
             // module (falls back to sensible defaults when the addon is absent).
             'editorButtonLabel' => Helpers::editorButtonLabel(),
@@ -682,6 +794,48 @@ function _swarmz_simpleLifecycle(string $hookName, string $endpoint, array $para
     } catch (\Throwable $e) {
         _swarmz_logModuleCall($hookName . '.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
         return Helpers::formatError($e, $api ? $api->maskedKey() : null);
+    }
+}
+
+/**
+ * Best-effort call to /platform-plan-refresh. Rolls the workspace's credit
+ * cycle (reset monthly credits + apply rollover) anchored at $cycleAnchor.
+ *
+ * Deliberately swallows every failure: a refresh is an enhancement on top of
+ * the entitlement push, and the endpoint may not yet be deployed on older
+ * servers (it returns 404 there) — neither case should fail the caller.
+ *
+ * @param Api    $api
+ * @param string $tenantId
+ * @param string $cycleAnchor ISO date
+ * @param string $context     Calling hook name, for the log line.
+ */
+function _swarmz_planRefresh(Api $api, string $tenantId, string $cycleAnchor, string $context): void
+{
+    try {
+        $result = $api->planRefresh($tenantId, $cycleAnchor, true);
+        _swarmz_logModuleCall(
+            $context . '.PlanRefresh',
+            ['tenant_id' => $tenantId, 'cycle_anchor' => $cycleAnchor],
+            $result['body'],
+            $api->maskedKey()
+        );
+    } catch (SwarmzApiException $e) {
+        // 404 = endpoint not deployed yet (graceful no-op); anything else is a
+        // soft warning. Either way we don't propagate.
+        _swarmz_logModuleCall(
+            $context . '.PlanRefresh.Skipped',
+            ['tenant_id' => $tenantId, 'cycle_anchor' => $cycleAnchor],
+            ['note' => 'plan-refresh unavailable', 'status' => $e->getStatusCode(), 'error' => $e->getErrorCode()],
+            $api->maskedKey()
+        );
+    } catch (\Throwable $e) {
+        _swarmz_logModuleCall(
+            $context . '.PlanRefresh.Skipped',
+            ['tenant_id' => $tenantId, 'cycle_anchor' => $cycleAnchor],
+            ['error' => $e->getMessage()],
+            $api->maskedKey()
+        );
     }
 }
 

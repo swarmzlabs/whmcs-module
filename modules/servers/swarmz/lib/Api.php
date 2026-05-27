@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.2.1';
+    const VERSION = '1.3.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -81,6 +81,92 @@ class Api
     {
         $path = self::FUNCTIONS_PATH . '/' . ltrim($endpoint, '/');
         return $this->get($path, $query);
+    }
+
+    /**
+     * Roll the workspace's monthly credit cycle (reset/rollover) at a billing
+     * boundary. Maps to POST /functions/v1/platform-plan-refresh.
+     *
+     * The host owns the billing cycle, so we drive the reset explicitly from
+     * WHMCS (on ChangePackage / renewal) rather than trusting a swarmz-side
+     * wall-clock cron. The call is idempotent per (tenant, cycle_anchor): a
+     * retry for the same anchor is a no-op server-side.
+     *
+     * Body contract (reseller-production-buildout.md §3 W1.5):
+     *   { tenant_id | external_ref, cycle_anchor: "<ISO date>" }
+     * Either tenant_id or external_ref resolves the workspace; we send whichever
+     * we have (tenant_id is preferred and unambiguous).
+     *
+     * @param string      $refOrId     A swarmz tenant_id (UUID) OR a WHMCS
+     *                                  external_ref ("whmcs:<serviceid>").
+     * @param string      $cycleAnchor ISO-8601 date (e.g. "2026-06-01") marking
+     *                                  the start of the new billing cycle.
+     * @param bool        $isTenantId  When true (default), $refOrId is sent as
+     *                                  tenant_id; when false, as external_ref.
+     * @return array{statusCode:int, body:array}
+     */
+    public function planRefresh(string $refOrId, string $cycleAnchor, bool $isTenantId = true): array
+    {
+        $body = [
+            'cycle_anchor' => $cycleAnchor,
+        ];
+        if ($isTenantId) {
+            $body['tenant_id'] = $refOrId;
+        } else {
+            $body['external_ref'] = $refOrId;
+        }
+        return $this->postPlatform('platform-plan-refresh', $body);
+    }
+
+    /**
+     * Fetch the consolidated billing summary for the account (or a single
+     * workspace when a ref is supplied). Maps to POST
+     * /functions/v1/platform-billing-summary.
+     *
+     * NOTE ON AUTH (important): the deployed platform-billing-summary function
+     * authenticates the *account owner's Supabase user JWT* — NOT the sk_live_
+     * platform key this module uses. Called with the platform key it currently
+     * returns 401 {error:"unauthorized", reason:"invalid_token"}. The admin
+     * Console therefore treats a 401/403 here as "summary not available over the
+     * key auth surface" and falls back to the key-authed platform-usage
+     * aggregate. This method is implemented to the documented contract so it
+     * lights up automatically if/when the endpoint gains key-auth (or a
+     * key-authed sibling is added) — see the report notes.
+     *
+     * Response shape (from platform-billing-summary/index.ts):
+     *   {
+     *     ok: true,
+     *     account: { id, name, slug, email },
+     *     usage:   { credits_used, usd_credits, cloud_usd,
+     *                period: { from, to, label },
+     *                by_workspace: [{ workspace_id, credits_used, usd_credits, cloud_usd }] },
+     *     upcoming: { amount_due_cents, currency, period_end, next_attempt } | null,
+     *     upcoming_error?: string,
+     *     card: { brand, last4, exp_month, exp_year } | null,
+     *     card_on_file: bool,
+     *     billing: { company, email, address, vat } | null,
+     *     invoices: [{ id, stripe_invoice_id, status, amount_due_cents,
+     *                  amount_paid_cents, currency, period_start, period_end,
+     *                  hosted_invoice_url, paid_at, created_at }]
+     *   }
+     *
+     * @param string|null $refOrId    Optional tenant_id to scope the summary to
+     *                                 one workspace. Null = account-wide.
+     * @param bool        $isTenantId When true (default) a non-null $refOrId is
+     *                                sent as tenant_id; else as external_ref.
+     * @return array{statusCode:int, body:array}
+     */
+    public function billingSummary(?string $refOrId = null, bool $isTenantId = true): array
+    {
+        $body = [];
+        if ($refOrId !== null && $refOrId !== '') {
+            if ($isTenantId) {
+                $body['tenant_id'] = $refOrId;
+            } else {
+                $body['external_ref'] = $refOrId;
+            }
+        }
+        return $this->postPlatform('platform-billing-summary', $body);
     }
 
     /**
