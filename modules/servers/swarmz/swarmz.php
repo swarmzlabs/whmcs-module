@@ -56,7 +56,6 @@ function swarmz_MetaData()
         'RequiresServer'           => true,
         'DefaultSortOrder'         => 1,
         'ServiceSingleSignOnLabel' => 'Open AI Editor',
-        'AdminSingleSignOnLabel'   => 'Open AI Editor (admin)',
         'ListAccountsUniqueIdentifierField'       => 'tenant_id',
         'ListAccountsUniqueIdentifierDisplayName' => 'Swarmz Tenant ID',
     ];
@@ -353,17 +352,6 @@ function swarmz_ServiceSingleSignOn(array $params)
     return _swarmz_doSso($params);
 }
 
-/**
- * Admin-side server SSO (rare for swarmz — defers to service SSO).
- *
- * @param array $params
- * @return array{success: bool, redirectTo?: string, errorMsg?: string}
- */
-function swarmz_AdminSingleSignOn(array $params)
-{
-    return _swarmz_doSso($params);
-}
-
 // =========================================================================
 // Usage metrics — WHMCS polls this to render usage in the client area.
 // =========================================================================
@@ -372,22 +360,38 @@ function swarmz_AdminSingleSignOn(array $params)
  * Return current-period usage for the workspace.
  *
  * The live /platform-usage endpoint returns the shape:
- *   { ok: true, usage: {
+ *   { ok: true,
+ *     usage: {
  *       credits_used: number,
  *       usd_credits:  number,
  *       cloud_usd:    number,
  *       period:       { from: ISO, to: ISO, label: "current_month"|"last_month"|"ytd" },
  *       by_workspace: [{ workspace_id, credits_used, usd_credits, cloud_usd }]
- *   } }
+ *     },
+ *     balances: {            // point-in-time per-pool standing balances
+ *       purchased_total, topup_available, included_remaining, rollover_remaining,
+ *       by_workspace: [{
+ *         topup_available, purchased_total, purchased_consumed,
+ *         included_credits, included_used, included_remaining,
+ *         rollover_credits, rollover_used, rollover_remaining,
+ *         caps: { credits_per_day, monthly_credit_cap, monthly_credits, ... }
+ *       }]
+ *     } | null
+ *   }
+ *
+ * Credits are THREE separate pools — never one merged number:
+ *   1. Free   — daily allowance (credits_per_day), optional monthly free cap.
+ *   2. Monthly — paid grant (monthly_credits / included_credits), may roll over.
+ *   3. Top-up — one-off purchased credits (signup bonus + later top-ups).
+ *
+ * We prefer the live per-pool balances when present; otherwise we fall back to
+ * the configured allowances so the display ALWAYS matches what the host set
+ * (never inventing a number by multiplying daily × 30).
  *
  * IMPORTANT: the endpoint resolves the workspace ONLY by tenant_id; passing
  * external_ref alone returns account-wide aggregate (a leak in this context).
  * We therefore only call it once we know the tenant_id — otherwise we return
  * a tidy "not provisioned yet" response without hitting the API.
- *
- * Pricing knobs (credits_per_day, monthly_credit_cap, max_projects, etc.) live
- * in the WHMCS product config, so we surface those locally as the "limit"
- * values rather than trying to fish them out of the usage response.
  *
  * @param array $params
  * @return array
@@ -400,16 +404,18 @@ function swarmz_UsageUpdate(array $params)
 
     // Local entitlement view — what the admin configured on the product. We
     // surface this even if the API call fails, so the client area still shows
-    // a useful credit budget.
+    // the configured allowances.
     $entitlements = Helpers::mapConfigOptionsToEntitlements($params);
-    $creditsLimit = $entitlements['monthly_credit_cap'] ?? null;
-    if ($creditsLimit === null) {
-        // Fall back to daily * 30 as a soft month-ish ceiling, if a daily cap is set.
-        $dailyCap = $entitlements['credits_per_day'] ?? null;
-        if ($dailyCap !== null) {
-            $creditsLimit = (int) $dailyCap * 30;
-        }
-    }
+
+    // Configured per-pool allowances (the fallback / "what the host set"):
+    //   Free pool:    credits_per_day (daily allowance) + monthly_credit_cap.
+    //   Monthly pool: monthly_credits (paid grant per cycle).
+    //   Top-up pool:  default_credits_topup (signup bonus; later top-ups add to it).
+    $freeDailyCfg     = $entitlements['credits_per_day'] ?? null;     // null = unlimited daily
+    $freeMonthlyCap   = $entitlements['monthly_credit_cap'] ?? null;  // null = no monthly cap
+    $monthlyCredits   = (int) ($entitlements['monthly_credits'] ?? 0);
+    $topupCfg         = Helpers::getDefaultCreditsTopup($params);     // signup bonus
+    $rolloverMonths   = (int) ($entitlements['rollover_months'] ?? 0);
 
     // Plan limits surfaced to the client area (W6.6). Apply the 0 = UNLIMITED
     // sentinel for domains + published projects (decision D1): null is returned
@@ -417,9 +423,24 @@ function swarmz_UsageUpdate(array $params)
     $domainsLimit = Helpers::unlimitedSentinel($entitlements['max_custom_domains'] ?? 0);
     $publishedLimit = Helpers::unlimitedSentinel($entitlements['max_published_projects'] ?? 0);
     $customDomainsEnabled = (bool) ($entitlements['custom_domains_enabled'] ?? true);
-    // Paid monthly grant (0 = none). Surfaced so the client sees their monthly
-    // credit allotment distinctly from the soft cap.
-    $monthlyCredits = (int) ($entitlements['monthly_credits'] ?? 0);
+
+    // The configured-allowance view of the three credit pools, used as the
+    // fallback whenever live balances are unavailable. Building it once keeps
+    // the not-provisioned + error branches identical to the happy path.
+    $configCredits = [
+        'freeDaily'        => $freeDailyCfg,            // null = unlimited
+        'freeDailyUsed'    => null,                     // no per-pool used available offline
+        'freeMonthlyCap'   => $freeMonthlyCap,          // null = none
+        'monthlyCredits'   => $monthlyCredits,          // paid grant size
+        'monthlyUsed'      => null,
+        'monthlyRemaining' => $monthlyCredits > 0 ? $monthlyCredits : null,
+        'rolloverCredits'  => null,                     // unknown until live read
+        'rolloverMonths'   => $rolloverMonths,
+        'topupCredits'     => $topupCfg,                // configured signup bonus
+        'topupUsed'        => null,
+        'topupRemaining'   => $topupCfg > 0 ? $topupCfg : null,
+        'creditsSource'    => 'config',
+    ];
 
     // Not provisioned yet → don't hit the API; return a friendly placeholder
     // so the client area template can render without errors. The endpoint
@@ -427,11 +448,9 @@ function swarmz_UsageUpdate(array $params)
     // entire account's aggregate, which is the wrong number to show this
     // client.
     if ($tenantId === null) {
-        return [
+        return array_merge([
             'success'              => true,
             'creditsUsed'          => 0,
-            'creditsLimit'         => $creditsLimit,
-            'monthlyCredits'       => $monthlyCredits,
             'cloudUsd'             => 0.0,
             'usdCredits'           => 0.0,
             'projectsCount'        => 0,
@@ -443,7 +462,7 @@ function swarmz_UsageUpdate(array $params)
             'periodStart'          => null,
             'periodEnd'            => null,
             'raw'                  => [],
-        ];
+        ], $configCredits);
     }
 
     $api = null;
@@ -466,11 +485,16 @@ function swarmz_UsageUpdate(array $params)
         $usage = isset($resp['usage']) && is_array($resp['usage']) ? $resp['usage'] : [];
         $period = isset($usage['period']) && is_array($usage['period']) ? $usage['period'] : [];
 
-        return [
+        // Per-pool standing balances (point-in-time). When present, these are
+        // the REAL numbers to display; otherwise we keep the configured view.
+        $credits = _swarmz_creditPoolsFromBalances(
+            $resp['balances'] ?? null,
+            $configCredits
+        );
+
+        return array_merge([
             'success'              => true,
             'creditsUsed'          => isset($usage['credits_used']) ? (float) $usage['credits_used'] : 0.0,
-            'creditsLimit'         => $creditsLimit,
-            'monthlyCredits'       => $monthlyCredits,
             'cloudUsd'             => isset($usage['cloud_usd'])    ? (float) $usage['cloud_usd']    : 0.0,
             'usdCredits'           => isset($usage['usd_credits'])  ? (float) $usage['usd_credits']  : 0.0,
             // The live endpoint doesn't return project/domain counts; null tells
@@ -485,7 +509,7 @@ function swarmz_UsageUpdate(array $params)
             'periodEnd'            => $period['to']    ?? null,
             'periodLabel'          => $period['label'] ?? null,
             'raw'                  => $usage,
-        ];
+        ], $credits);
     } catch (SwarmzApiException $e) {
         // `usage_read_failed` is a known soft failure — the metrics view can be
         // briefly incomplete during a server-side migration. Treat as a
@@ -500,10 +524,10 @@ function swarmz_UsageUpdate(array $params)
         );
         // On a soft/hard failure, fall back to the daily-cron usage cache (if
         // present) so the client area still shows recent numbers rather than
-        // zeros. The plan limits always come from the local entitlement view.
+        // zeros. The credit pools + plan limits always come from the local
+        // configured view (no live balances on this path).
         $limits = [
-            'creditsLimit'         => $creditsLimit,
-            'monthlyCredits'       => $monthlyCredits,
+            'configCredits'        => $configCredits,
             'domainsLimit'         => $domainsLimit,
             'publishedLimit'       => $publishedLimit,
             'customDomainsEnabled' => $customDomainsEnabled,
@@ -520,8 +544,7 @@ function swarmz_UsageUpdate(array $params)
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('UsageUpdate.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
         $limits = [
-            'creditsLimit'         => $creditsLimit,
-            'monthlyCredits'       => $monthlyCredits,
+            'configCredits'        => $configCredits,
             'domainsLimit'         => $domainsLimit,
             'publishedLimit'       => $publishedLimit,
             'customDomainsEnabled' => $customDomainsEnabled,
@@ -536,12 +559,91 @@ function swarmz_UsageUpdate(array $params)
 }
 
 /**
+ * Map the live `balances` section of a platform-usage response into the
+ * three-pool credit view the client area renders. Falls back to the configured
+ * allowances ($configCredits) whenever a live value is missing, so the display
+ * always matches what the host set.
+ *
+ * The module always calls platform-usage with a single tenant_id, so the
+ * relevant per-workspace balance is the (only) entry in balances.by_workspace;
+ * we read that one row. If balances is null/empty (endpoint not deployed yet or
+ * a non-fatal balances read failure), the configured view is returned verbatim.
+ *
+ * @param mixed              $balances     The response `balances` object (or null).
+ * @param array<string,mixed> $configCredits Configured-allowance fallback view.
+ * @return array<string,mixed>
+ */
+function _swarmz_creditPoolsFromBalances($balances, array $configCredits): array
+{
+    if (!is_array($balances)) {
+        return $configCredits;
+    }
+
+    // Prefer the per-workspace row (point-in-time, this tenant only). Fall back
+    // to the account-wide sums, which for a single-tenant query are identical.
+    $ws = null;
+    if (isset($balances['by_workspace'][0]) && is_array($balances['by_workspace'][0])) {
+        $ws = $balances['by_workspace'][0];
+    }
+    $caps = (is_array($ws) && isset($ws['caps']) && is_array($ws['caps'])) ? $ws['caps'] : [];
+
+    $num = static function ($v) {
+        return (is_numeric($v)) ? (float) $v : null;
+    };
+
+    $out = $configCredits;
+    $out['creditsSource'] = 'live';
+
+    // ---- Free pool: daily allowance + optional monthly cap (from caps) ----
+    // caps.credits_per_day === null means unlimited; keep null so the template
+    // shows "unlimited" rather than 0.
+    if (array_key_exists('credits_per_day', $caps)) {
+        $out['freeDaily'] = $num($caps['credits_per_day']); // may be null = unlimited
+    }
+    if (array_key_exists('monthly_credit_cap', $caps)) {
+        $out['freeMonthlyCap'] = $num($caps['monthly_credit_cap']);
+    }
+
+    // ---- Monthly pool: included grant (size / used / remaining) + rollover ----
+    if ($ws !== null && isset($ws['included_credits'])) {
+        $included   = (float) ($ws['included_credits'] ?? 0);
+        $includedUs = (float) ($ws['included_used'] ?? 0);
+        $includedRe = isset($ws['included_remaining'])
+            ? (float) $ws['included_remaining']
+            : max(0.0, $included - $includedUs);
+        $out['monthlyCredits']   = $included;
+        $out['monthlyUsed']      = $includedUs;
+        $out['monthlyRemaining'] = $includedRe;
+
+        $out['rolloverCredits']  = isset($ws['rollover_remaining'])
+            ? (float) $ws['rollover_remaining']
+            : (isset($balances['rollover_remaining']) ? (float) $balances['rollover_remaining'] : null);
+    }
+
+    // ---- Top-up pool: purchased total / consumed / still-available ----
+    if ($ws !== null && (isset($ws['topup_available']) || isset($ws['purchased_total']))) {
+        $purchased = (float) ($ws['purchased_total'] ?? 0);
+        $consumed  = (float) ($ws['purchased_consumed'] ?? 0);
+        $available = isset($ws['topup_available'])
+            ? (float) $ws['topup_available']
+            : max(0.0, $purchased - $consumed);
+        // Show lifetime purchased as the pool size when known; else the available.
+        $out['topupCredits']   = $purchased > 0 ? $purchased : $available;
+        $out['topupUsed']      = $consumed;
+        $out['topupRemaining'] = $available;
+    }
+
+    return $out;
+}
+
+/**
  * Build a UsageUpdate result from the daily-cron usage cache when a live read
  * failed, falling back to zeros if there is no cache. Always carries the
- * locally-known plan limits so the template renders a useful budget view.
+ * locally-configured credit pools + plan limits so the template renders a
+ * useful, host-accurate view even with no live balances.
  *
  * @param int                $serviceId
- * @param array<string,mixed> $limits  { creditsLimit, monthlyCredits, domainsLimit, publishedLimit, customDomainsEnabled }
+ * @param array<string,mixed> $limits  { configCredits, domainsLimit, publishedLimit, customDomainsEnabled }
  * @param bool               $success
  * @param string|null        $errorMsg
  * @param string|null        $note
@@ -550,11 +652,12 @@ function swarmz_UsageUpdate(array $params)
 function _swarmz_usageFromCacheOrZero(int $serviceId, array $limits, bool $success, ?string $errorMsg = null, ?string $note = null): array
 {
     $cache = Helpers::getCachedUsage($serviceId);
-    $out = [
+    $configCredits = isset($limits['configCredits']) && is_array($limits['configCredits'])
+        ? $limits['configCredits']
+        : [];
+    $out = array_merge([
         'success'              => $success,
         'creditsUsed'          => $cache !== null ? (float) $cache['credits'] : 0.0,
-        'creditsLimit'         => $limits['creditsLimit'] ?? null,
-        'monthlyCredits'       => $limits['monthlyCredits'] ?? 0,
         'cloudUsd'             => $cache !== null ? (float) $cache['cloud'] : 0.0,
         'usdCredits'           => $cache !== null ? (float) $cache['ai'] : 0.0,
         'projectsCount'        => null,
@@ -567,7 +670,7 @@ function _swarmz_usageFromCacheOrZero(int $serviceId, array $limits, bool $succe
         'periodEnd'            => null,
         'periodLabel'          => null,
         'raw'                  => [],
-    ];
+    ], $configCredits);
     if ($cache !== null) {
         $out['fromCache'] = true;
         $out['cachedAt'] = $cache['cached_at'];
@@ -623,10 +726,9 @@ function swarmz_AdminLink(array $params)
     if ($serviceId <= 0) {
         return '';
     }
-    // WHMCS will call swarmz_AdminSingleSignOn() for us when the admin uses
-    // the standard SSO button, but supplying a direct AdminLink is the way to
-    // expose a custom CTA. We render a tiny form that posts to the WHMCS
-    // single-sign-on endpoint.
+    // Supplying a direct AdminLink is the way to expose a custom admin CTA. We
+    // render a tiny form that posts to the WHMCS single-sign-on endpoint, which
+    // routes through the client/service SSO flow (swarmz_ServiceSingleSignOn).
     $url = 'sso.php?direct=true&sso_redirect_action=service&sso_redirect_id=' . $serviceId;
     return '<form action="' . htmlspecialchars($url, ENT_QUOTES) . '" method="post" target="_blank" style="display:inline;">'
         . '<button type="submit" class="btn btn-info">Open AI Editor</button>'
@@ -659,8 +761,6 @@ function swarmz_ClientArea(array $params)
             'ssoUrl'               => $ssoUrl,
             'usage'                => $usage,
             'creditsUsed'          => $usage['creditsUsed']   ?? 0,
-            'creditsLimit'         => $usage['creditsLimit']  ?? null,
-            'monthlyCredits'       => $usage['monthlyCredits'] ?? 0,
             'cloudUsd'             => $usage['cloudUsd']      ?? 0,
             'usdCredits'           => $usage['usdCredits']    ?? 0,
             'projectsCount'        => $usage['projectsCount'], // may be null — template handles it
@@ -670,6 +770,25 @@ function swarmz_ClientArea(array $params)
             'publishedCount'       => $usage['publishedCount'] ?? null,
             'publishedLimit'       => $usage['publishedLimit'] ?? null,
             'customDomainsEnabled' => $usage['customDomainsEnabled'] ?? true,
+            // Three SEPARATE credit pools (never merged). Values come from the
+            // live per-pool balances when available, else the configured plan
+            // allowances — so the display always matches what the host set.
+            // 1) Free — daily allowance (+ optional monthly free cap).
+            'freeDaily'            => $usage['freeDaily']        ?? null,  // null = unlimited
+            'freeDailyUsed'        => $usage['freeDailyUsed']    ?? null,
+            'freeMonthlyCap'       => $usage['freeMonthlyCap']   ?? null,
+            // 2) Monthly — paid grant per cycle (+ rollover pool).
+            'monthlyCredits'       => $usage['monthlyCredits']   ?? 0,
+            'monthlyUsed'          => $usage['monthlyUsed']      ?? null,
+            'monthlyRemaining'     => $usage['monthlyRemaining'] ?? null,
+            'rolloverCredits'      => $usage['rolloverCredits']  ?? null,
+            'rolloverMonths'       => $usage['rolloverMonths']   ?? 0,
+            // 3) Top-up — one-off / purchased credits (signup bonus + later top-ups).
+            'topupCredits'         => $usage['topupCredits']     ?? 0,
+            'topupUsed'            => $usage['topupUsed']         ?? null,
+            'topupRemaining'       => $usage['topupRemaining']   ?? null,
+            // Where the credit numbers came from ('live' | 'config') — for sub-labels.
+            'creditsSource'        => $usage['creditsSource']    ?? 'config',
             // Host-configurable presentation, set in the Reseller Console addon
             // module (falls back to sensible defaults when the addon is absent).
             'editorButtonLabel' => Helpers::editorButtonLabel(),

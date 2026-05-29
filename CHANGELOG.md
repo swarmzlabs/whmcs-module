@@ -5,6 +5,22 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3] - 2026-05-29
+
+Client-area credit display fix + cleaner UI, and removal of the admin SSO button.
+
+### Fixed
+- **Client area conflated three credit pools into one number** — and could show a confusing "150 credits remaining" when the host had configured, say, 5 free/day + a 1-credit signup top-up (the old code multiplied the daily allowance by 30 to invent a soft monthly ceiling). Credits are now shown as **three separate cards** — **Free** (daily allowance, resets 00:00 UTC, optional monthly cap), **Monthly** (paid grant, renews on the billing cycle, with rollover), and **Top-up** (one-off / purchased) — each with its own remaining balance and reset cadence. The numbers come from the live per-pool balances returned by `platform-usage` (`balances.by_workspace[].{included_*, rollover_*, topup_available, purchased_*, caps}`) when available, and fall back to the configured plan allowances (`credits_per_day`, `monthly_credit_cap`, `monthly_credits`, `default_credits_topup`) otherwise — so the display always matches what the host configured and never fabricates a multiplied total.
+
+### Changed
+- **Cleaner, theme-neutral client-area UI.** Replaced the hardcoded light-grey inline card styles with a tidy, responsive card grid that derives its borders/fills from the current text colour, so it reads well on both light and dark WHMCS themes. Still fully unbranded; the SSO button and dashboard link are unchanged.
+
+### Removed
+- **Admin "Open AI Editor (admin)" SSO button.** Dropped the `AdminSingleSignOnLabel` metadata entry and the `swarmz_AdminSingleSignOn()` handler. Client-facing SSO (`ServiceSingleSignOnLabel` / `swarmz_ServiceSingleSignOn`) and the admin "Login as User" `AdminLink` button are unaffected.
+
+### Upgrade notes
+- Drop-in over 1.3.x — overwrite `modules/servers/swarmz/` and `modules/addons/swarmz/`. No data migration. The richer per-pool credit cards light up automatically once the server's `platform-usage` returns the `balances` section; until then they render from the configured plan allowances.
+
 ## [1.3.2] - 2026-05-29
 
 Bug fix: provisioning could send the wrong credential as the API key.
