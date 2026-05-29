@@ -5,6 +5,16 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] - 2026-05-29
+
+Bug fix: provisioning could send the wrong credential as the API key.
+
+### Fixed
+- **`unauthorized: invalid_key` on order accept / CreateAccount when the server Password field was blank.** `resolveApiKey` fell back to `$params['password']`, which in every service lifecycle call is the auto-generated **service** password (e.g. `9-X16]plgY1rJN`), not the `sk_live_` API key — so a blank server Password silently sent garbage and the API rejected it. Removed that fallback entirely; the key now comes only from the server Password field or the Reseller Console addon's "API Key" setting.
+
+### Added
+- **Actionable errors instead of `invalid_key`.** `makeApiClient` now validates the resolved key and fails fast with a clear message — "No Swarmz API key configured…" when blank, or "does not look like an API key (expected sk_live_…)" when the value isn't a key. Test Connection surfaces the same guidance, so a misconfigured server is obvious immediately.
+
 ## [1.3.1] - 2026-05-28
 
 Reseller plan controls + a clearer product-setup screen.

@@ -297,18 +297,23 @@ class Helpers
      */
     public static function resolveApiKey(array $params): string
     {
-        // serverpassword is the decrypted server password (provided by WHMCS).
+        // The sk_live_ key lives in the WHMCS server's Password field, which
+        // WHMCS passes (decrypted) as `serverpassword`.
         $key = '';
         if (isset($params['serverpassword']) && is_string($params['serverpassword'])) {
             $key = trim($params['serverpassword']);
         }
-        // Some WHMCS contexts expose 'password' top-level mirror of the server password.
-        if ($key === '' && isset($params['password']) && is_string($params['password'])) {
-            $key = trim($params['password']);
-        }
-        // Final fallback: the key set once in the Reseller Console addon module.
-        // Lets a host configure the key in ONE place and leave the WHMCS server
-        // Password field blank.
+
+        // IMPORTANT: do NOT fall back to $params['password']. In every service
+        // lifecycle call (CreateAccount/ChangePackage/…), `password` is the
+        // auto-generated *service* password (e.g. "9-X16]plgY1rJN"), NOT the API
+        // key. Using it sent the service password as the bearer and produced a
+        // confusing upstream `unauthorized: invalid_key` whenever the server
+        // Password field was blank. The only valid sources are the server
+        // Password field (above) and the addon "API Key" setting (below).
+
+        // Fallback: the key set once in the Reseller Console addon module, so a
+        // host can configure it in ONE place and leave the server Password blank.
         if ($key === '') {
             $addonKey = self::addonSetting('API Key', '');
             $key = is_string($addonKey) ? trim($addonKey) : '';
@@ -318,11 +323,34 @@ class Helpers
 
     /**
      * Construct a configured Api client from the WHMCS $params bag.
+     *
+     * Validates the resolved key up front and throws an actionable error rather
+     * than letting a blank/wrong value reach the API as a cryptic
+     * `unauthorized: invalid_key`.
      */
     public static function makeApiClient(array $params): Api
     {
         $apiKey = self::resolveApiKey($params);
         $baseUrl = self::resolveBaseUrl($params);
+
+        if ($apiKey === '') {
+            throw new SwarmzTransportException(
+                'No Swarmz API key configured. Paste your sk_live_… key into the '
+                . 'server\'s Password field (Setup → Products/Services → Servers), '
+                . 'or set it in the Swarmz Reseller Console addon.'
+            );
+        }
+        // A real key is `sk_live_…`. Anything else is almost certainly the wrong
+        // field — most commonly the auto-generated service password landing here
+        // because the server Password field was blank.
+        if (strpos($apiKey, 'sk_') !== 0) {
+            throw new SwarmzTransportException(
+                'The configured Swarmz key does not look like an API key (expected '
+                . 'sk_live_…). Check that the server\'s Password field holds your '
+                . 'Swarmz API key and not a service or server password.'
+            );
+        }
+
         return new Api($apiKey, $baseUrl);
     }
 
