@@ -18,7 +18,8 @@ module keeps no state of its own beyond two per-service custom fields
 | WHMCS event | Swarmz API call | Effect |
 |-------------|-----------------|--------|
 | Create | `platform-create` | Provisions the customer's workspace; stores its tenant id + dashboard URL on the service |
-| Change package | `platform-plan` | Pushes new entitlements (credits, projects, compute, domains, cloud budget) |
+| Change package | `platform-plan` + `platform-plan-refresh` | Pushes new entitlements (credits, projects, compute, domains, cloud budget) and resets the monthly credit cycle at the boundary |
+| Renewal (`InvoicePaid`) | `platform-plan-refresh` | Resets the monthly paid-credit grant and applies rollover for the new cycle |
 | Suspend | `platform-suspend` | Pauses pods + cloud, unpublishes sites, blocks SSO |
 | Unsuspend | `platform-unsuspend` | Resumes pods + cloud, republishes sites |
 | Terminate | `platform-terminate` | Full teardown (permanent) |
@@ -37,9 +38,17 @@ into their workspace — their custom domain when configured, otherwise
 **Usage reporting** — `platform-usage` feeds credits used, AI USD spend, and
 cloud USD spend back into WHMCS for usage-based billing or client-area display.
 
-**Per-product entitlements** — seven WHMCS product config options map 1:1 to the
-Swarmz entitlement schema: credits/day, monthly credit cap, max projects, max
-custom domains, max compute size, cloud budget cap, and initial top-up.
+**Per-product entitlements** — eleven WHMCS product config options on each
+product's **Module Settings** tab map 1:1 to the Swarmz entitlement schema.
+They're grouped by a `Group · field` label prefix:
+
+- **Credits** — free per day, free monthly cap, paid monthly grant, rollover (none / 1 / 2 cycles), signup bonus.
+- **Limit** — projects, published apps, custom domains (count), allow custom domains (on/off). For the count caps, **0 or blank = unlimited**.
+- **Compute** — max size (display lock; provisioning is Nano today).
+- **Cloud** — budget cap in USD (pauses the backend past that monthly spend).
+
+To offer tiers, create one product per plan and set different values. The
+options are positional — never reorder them in the module.
 
 **Connection test** — the WHMCS "Test Connection" button validates the API key
 against `platform-sso` with a non-existent tenant id (read-only, no side
@@ -85,11 +94,24 @@ unzip it at your WHMCS root. It lays down two modules:
 - `<whmcs-root>/modules/addons/swarmz/` — the Reseller Console (activate it
   under **Setup → Addon Modules**, then set your API key in its config).
 
-The full hosting-company onboarding guide — platform signup, key issuance,
-server and product configuration, first customer order, and billing
-reconciliation — is published on the Swarmz docs site:
+### Updating an existing install
 
-> **Swarmz docs — WHMCS onboarding:** _URL to be added_
+Overwrite the two module folders with the new version's — the module is
+stateless (its only persistence is the two per-service custom fields), so there
+is no data migration and no downtime:
+
+```
+modules/servers/swarmz/      ← replace
+modules/addons/swarmz/        ← replace
+```
+
+New product config options (added in a minor release) appear automatically on
+each product's **Module Settings** tab after the overwrite; previously-saved
+option values are preserved because options are positional and only ever
+appended. No WHMCS reactivation is needed.
+
+The Swarmz API reference (every `platform-*` endpoint, request/response shapes,
+error codes) is published at **https://docs.swarmz.net/api**.
 
 ---
 

@@ -5,6 +5,28 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-05-28
+
+Reseller plan controls + a clearer product-setup screen.
+
+### Added
+- **Four new product config options** (per-plan entitlements):
+  - **Credits · paid monthly** (`monthly_credits`) — paid credit grant added each billing cycle.
+  - **Credits · rollover** (`rollover_months`) — carry unused paid credits over none / 1 / 2 cycles.
+  - **Limit · published apps** (`max_published_projects`) — how many apps can be live at once (0 = unlimited).
+  - **Limit · allow custom domains** (`custom_domains_enabled`) — master on/off for custom domains, independent of the count cap.
+- **`platform-plan-refresh`** call — fires on renewal (`InvoicePaid`) and package change to reset the monthly credit cycle and apply rollover at the billing boundary.
+- **`platform-billing-summary`** call + admin Reseller Console billing cards — credits purchased vs consumed, rollover/balance, cloud spend vs cap (falls back to the key-authed `platform-usage` aggregate when the summary endpoint is owner-JWT only).
+- **Daily cron hook** — refreshes usage and reconciles externally-changed tenant status back into WHMCS.
+- Client-area panel now shows plan limits (credits remaining, published / custom-domain usage), unbranded.
+
+### Changed
+- **Clearer product Module Settings screen.** Config-option labels now use a `Group · field` prefix (Credits / Limit / Compute / Cloud) so related knobs read as clusters, and every description is a single short line. No fields were reordered — saved values on existing products are unaffected.
+- Sentinel reconciled across the count caps: **0 or blank = unlimited** for projects, published apps, and custom domains. Disable custom domains entirely with the new on/off option.
+
+### Upgrade notes
+- Drop-in over 1.2.x — overwrite `modules/servers/swarmz/` and `modules/addons/swarmz/`. The module is stateless (only two per-service custom fields), so there is no data migration. The four new options appear on each product's **Module Settings** tab after upgrade; existing values for options 1–7 are preserved.
+
 ## [1.2.1] - 2026-05-24
 
 Verification release. Re-validated every module API call against the

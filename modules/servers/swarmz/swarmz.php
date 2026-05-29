@@ -64,12 +64,20 @@ function swarmz_MetaData()
 
 // =========================================================================
 // Product config options — per-product knobs the WHMCS admin sets.
-// Order matters: each maps to configoption1..7 (see Helpers).
+//
+// ORDER IS LOAD-BEARING: WHMCS maps these to configoption1..11 BY POSITION,
+// and Helpers::mapConfigOptionsToEntitlements reads them positionally. Never
+// reorder or remove an option — it silently remaps saved values on every
+// existing product. Add new options at the END only.
+//
+// FriendlyNames use a "Group · field" prefix so related knobs read as clusters
+// in WHMCS's flat two-column layout. Descriptions are kept to one short line;
+// the full reference lives in README.md.
 // =========================================================================
 
 /**
- * Per-product configuration options. Maps 1:1 to the entitlements schema
- * (reseller-functions-rewrite.md §10). Empty string = unlimited where allowed.
+ * Per-product configuration options. Maps 1:1 to the entitlements schema.
+ * The sentinel for the count caps is: blank or 0 = unlimited.
  *
  * @return array
  */
@@ -78,95 +86,95 @@ function swarmz_ConfigOptions()
     return [
         // 1
         'credits_per_day' => [
-            'FriendlyName' => 'Credits per day',
+            'FriendlyName' => 'Credits · free per day',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '5',
-            'Description'  => 'Daily AI credit budget per workspace. Leave empty for unlimited.',
+            'Description'  => 'Free AI credits each day. Blank = unlimited.',
         ],
         // 2
         'monthly_credit_cap' => [
-            'FriendlyName' => 'Monthly credit cap',
+            'FriendlyName' => 'Credits · free monthly cap',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '',
-            'Description'  => 'Optional hard monthly ceiling. Leave empty for none.',
+            'Description'  => 'Ceiling on free credits per month. Blank = none.',
         ],
         // 3
         'max_projects' => [
-            'FriendlyName' => 'Max projects',
+            'FriendlyName' => 'Limit · projects',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '',
-            'Description'  => 'Project count cap. Empty or <strong>0 = unlimited</strong>; a positive number is a hard cap.',
+            'Description'  => 'Projects they can create. 0 or blank = unlimited.',
         ],
         // 4
         'max_custom_domains' => [
-            'FriendlyName' => 'Max custom domains',
+            'FriendlyName' => 'Limit · custom domains',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '0',
-            'Description'  => 'Custom-domain cap (each domain costs ~$0.10/mo). <strong>0 = unlimited</strong>; a positive number is a hard cap. To switch custom domains off entirely, use "Custom domains enabled" below.',
+            'Description'  => 'How many custom domains. 0 = unlimited. (Switch off with "allow custom domains" below.)',
         ],
         // 5
         'max_compute_size' => [
-            'FriendlyName' => 'Max compute size',
+            'FriendlyName' => 'Compute · max size',
             'Type'         => 'dropdown',
             'Options'      => 'nano,micro,small,medium,large,xlarge,2xl,4xl',
             'Default'      => 'nano',
-            'Description'  => 'Locks the editor compute selector. Provisioning still uses Nano scale-to-zero.',
+            'Description'  => 'Compute tier shown in the editor. Provisioning is always Nano today.',
         ],
         // 6
         'cloud_budget_cap' => [
-            'FriendlyName' => 'Cloud budget cap (USD)',
+            'FriendlyName' => 'Cloud · budget cap (USD)',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '',
-            'Description'  => 'Optional per-workspace cloud USD ceiling. Leave empty for none.',
+            'Description'  => 'Pause the backend past this monthly USD spend. Blank = none.',
         ],
         // 7
         'default_credits_topup' => [
-            'FriendlyName' => 'Initial credit top-up',
+            'FriendlyName' => 'Credits · signup bonus',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '0',
-            'Description'  => 'Credits granted at provisioning time (one-shot, idempotent on serviceid).',
+            'Description'  => 'One-off credits granted at signup. 0 = none.',
         ],
         // 8
         'monthly_credits' => [
-            'FriendlyName' => 'Monthly credits (paid grant)',
+            'FriendlyName' => 'Credits · paid monthly',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '0',
-            'Description'  => 'Paid credit grant added each billing cycle (set at provisioning and re-applied on each plan refresh). 0 = none — the plan then runs on the daily free budget only.',
+            'Description'  => 'Paid credits added each billing cycle. 0 = none (free daily budget only).',
         ],
         // 9
         'rollover_months' => [
-            'FriendlyName' => 'Credit rollover',
+            'FriendlyName' => 'Credits · rollover',
             'Type'         => 'dropdown',
             // Option keys are the values stored/sent; labels are shown to the admin.
             'Options'      => [
-                '0' => 'None (reset each cycle)',
-                '1' => '1 month',
-                '2' => '2 months',
+                '0' => 'None — reset each cycle',
+                '1' => 'Carry over 1 month',
+                '2' => 'Carry over 2 months',
             ],
             'Default'      => '0',
-            'Description'  => 'How long unused monthly credits carry over before they expire. Applied at the billing-cycle boundary (WHMCS renewal / package change).',
+            'Description'  => 'How long unused paid credits carry over before expiring.',
         ],
         // 10
         'max_published_projects' => [
-            'FriendlyName' => 'Max published projects',
+            'FriendlyName' => 'Limit · published apps',
             'Type'         => 'text',
-            'Size'         => '10',
+            'Size'         => '8',
             'Default'      => '0',
-            'Description'  => 'How many projects can be live (published) at once. <strong>0 = unlimited</strong>; a positive number is a hard cap.',
+            'Description'  => 'How many apps can be live at once. 0 = unlimited.',
         ],
         // 11
         'custom_domains_enabled' => [
-            'FriendlyName' => 'Custom domains enabled',
+            'FriendlyName' => 'Limit · allow custom domains',
             'Type'         => 'yesno',
             'Default'      => 'on',
-            'Description'  => 'Allow this plan to connect custom domains at all. Untick to switch the feature off entirely (independent of the "Max custom domains" cap above).',
+            'Description'  => 'Master on/off for custom domains on this plan.',
         ],
     ];
 }
