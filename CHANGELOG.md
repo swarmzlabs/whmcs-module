@@ -5,6 +5,17 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.5] - 2026-05-30
+
+Clearer free-credit limit labels (the daily + monthly free caps are now actually enforced).
+
+### Changed
+- **"Credits · free per month (cap)"** (was "free monthly cap") — relabelled and re-described so it's clear this is the lever that caps the *daily* free credits' monthly total (e.g. 5/day up to 30/month free, or 150 for a higher tier). Blank = no monthly limit.
+- **"Credits · free per day"** description clarified (resets 00:00 UTC; blank = unlimited per day).
+
+### Note
+- These two options now drive **real enforcement** for white-label end-users. Previously the daily allowance was not enforced server-side for reseller workspaces and a blank monthly cap silently behaved like 30; both are fixed on the Swarmz platform (no module change required for the enforcement itself). Set "free per day" + "free per month (cap)" on each plan to match your tiers.
+
 ## [1.3.4] - 2026-05-29
 
 Hotfix for a fatal in the 1.3.3 client area.

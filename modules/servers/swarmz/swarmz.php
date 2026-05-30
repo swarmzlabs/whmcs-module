@@ -89,15 +89,15 @@ function swarmz_ConfigOptions()
             'Type'         => 'text',
             'Size'         => '8',
             'Default'      => '5',
-            'Description'  => 'Free AI credits each day. Blank = unlimited.',
+            'Description'  => 'Free AI credits granted per day (resets 00:00 UTC). e.g. 5. Blank = unlimited per day.',
         ],
         // 2
         'monthly_credit_cap' => [
-            'FriendlyName' => 'Credits · free monthly cap',
+            'FriendlyName' => 'Credits · free per month (cap)',
             'Type'         => 'text',
             'Size'         => '8',
             'Default'      => '',
-            'Description'  => 'Ceiling on free credits per month. Blank = none.',
+            'Description'  => 'Max free credits per month — caps the daily free credits\' monthly total. e.g. 30, or 150 for a higher tier. Blank = no monthly limit (daily allowance only).',
         ],
         // 3
         'max_projects' => [
