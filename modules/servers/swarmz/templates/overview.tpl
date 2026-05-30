@@ -230,14 +230,6 @@
 
         </div>
 
-        {if $dashboardUrl}
-            <div style="margin-top:18px;">
-                <a href="{$dashboardUrl|escape}" target="_blank" rel="noopener" class="btn btn-default">
-                    Open dashboard in new tab
-                </a>
-            </div>
-        {/if}
-
         {if isset($usage.errorMsg) && $usage.errorMsg}
             <div class="alert alert-warning" style="margin-top:16px;">
                 Couldn&rsquo;t refresh usage just now: {$usage.errorMsg|escape}

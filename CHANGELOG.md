@@ -5,6 +5,13 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.7] - 2026-05-30
+
+Remove the redundant "Open dashboard in new tab" button from the client area.
+
+### Removed
+- **"Open dashboard in new tab"** button on the client-area service page. The **"Open AI Editor"** SSO button is the only entry point customers need — this extra link was redundant. Template-only change; the admin Service Details "Open dashboard »" link (admin convenience) is unchanged.
+
 ## [1.3.6] - 2026-05-30
 
 Pass a customer-facing plan name through to the white-label dashboard.
