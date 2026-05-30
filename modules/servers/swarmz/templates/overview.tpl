@@ -55,9 +55,13 @@
 {assign var="ct" value=$creditTerm|default:'credits'}
 
 {* Resolve "remaining" for each pool. Prefer an explicit *Remaining; otherwise
-   fall back to the pool size (a fresh, unused allowance). *}
+   fall back to the pool size (a fresh, unused allowance).
+   NOTE: config-option values arrive as STRINGS, so we gate the subtraction on
+   is_numeric for BOTH operands — PHP 8 throws a fatal "Unsupported operand
+   types: float - string" on arithmetic with a non-numeric string, and a bare
+   `!== null` check does not catch an empty/non-numeric string. *}
 {assign var="freeRemaining" value=$freeDaily}
-{if $freeDailyUsed !== null && $freeDaily !== null}
+{if $freeDaily !== null && $freeDailyUsed !== null && $freeDaily|is_numeric && $freeDailyUsed|is_numeric}
     {assign var="freeRemaining" value=$freeDaily-$freeDailyUsed}
     {if $freeRemaining < 0}{assign var="freeRemaining" value=0}{/if}
 {/if}

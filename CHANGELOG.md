@@ -5,6 +5,13 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.4] - 2026-05-29
+
+Hotfix for a fatal in the 1.3.3 client area.
+
+### Fixed
+- **Fatal `TypeError: Unsupported operand types: float - string` rendering the client-area overview.** The new credit template subtracted the daily-used count from the daily allowance, but WHMCS passes product config-option values as strings, and PHP 8 throws on arithmetic with a non-numeric string (a bare `!== null` check does not catch an empty string). The subtraction is now gated on `is_numeric` for both operands. **Template-only change** — if you already deployed 1.3.3, you can recover by replacing just `modules/servers/swarmz/templates/overview.tpl` (the compiled cache refreshes automatically).
+
 ## [1.3.3] - 2026-05-29
 
 Client-area credit display fix + cleaner UI, and removal of the admin SSO button.
