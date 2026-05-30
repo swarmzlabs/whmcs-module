@@ -110,6 +110,11 @@ class Helpers
         // swallowed as "absent → default yes".
         $customDomainsEnabled = self::resolveCustomDomainsEnabled($params, $opts);
 
+        // plan_name (option 12): the display-only plan label shown to the WHU in
+        // their dashboard (e.g. "Starter", "Pro"). Added at the END so it never
+        // shifts the load-bearing 1..11 positions.
+        $planNameRaw = $get(['configoption12']) ?? ($opts['plan_name'] ?? null);
+
         $entitlements = [
             'credits_per_day'        => self::parseIntOrNull($creditsPerDay),
             'monthly_credit_cap'     => self::parseIntOrNull($monthlyCreditCap),
@@ -122,6 +127,13 @@ class Helpers
             'max_published_projects' => self::parseIntOrZero($maxPublishedProjects),
             'custom_domains_enabled' => $customDomainsEnabled,
         ];
+
+        // Only include plan_name when the admin actually set one — a blank value
+        // shouldn't overwrite an existing label as an empty string.
+        $planName = is_string($planNameRaw) ? trim($planNameRaw) : '';
+        if ($planName !== '') {
+            $entitlements['plan_name'] = mb_substr($planName, 0, 40);
+        }
 
         return $entitlements;
     }

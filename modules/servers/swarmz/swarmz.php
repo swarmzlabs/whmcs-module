@@ -175,6 +175,14 @@ function swarmz_ConfigOptions()
             'Default'      => 'on',
             'Description'  => 'Master on/off for custom domains on this plan.',
         ],
+        // 12
+        'plan_name' => [
+            'FriendlyName' => 'Plan · display name',
+            'Type'         => 'text',
+            'Size'         => '20',
+            'Default'      => '',
+            'Description'  => 'Plan name shown to the customer in their dashboard (e.g. "Starter", "Pro"). Blank = no plan name shown.',
+        ],
     ];
 }
 

@@ -5,6 +5,16 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.6] - 2026-05-30
+
+Pass a customer-facing plan name through to the white-label dashboard.
+
+### Added
+- **"Plan · display name"** product config option (position 12 — existing options are unchanged). Set it to the name your customer should see in their dashboard (e.g. "Starter", "Pro"). It's display-only and flows to the Swarmz platform via `entitlements.plan_name`, where it replaces the generic "Free" label on the customer's workspace + account. Blank = no plan name shown.
+
+### Note
+- The customer's name and email (from their WHMCS profile) are already sent on provisioning; the Swarmz platform now persists the email so it appears in the white-label Account section. No action needed — just upgrade.
+
 ## [1.3.5] - 2026-05-30
 
 Clearer free-credit limit labels (the daily + monthly free caps are now actually enforced).
