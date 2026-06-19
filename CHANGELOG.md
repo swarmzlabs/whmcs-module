@@ -5,6 +5,46 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-06-19
+
+Plan-by-name: provision and change plans by picking a named plan instead of
+hand-setting the positional entitlement options.
+
+### Added
+- **`platform-plans` API call** (`Api::listPlans()`) — a key-authed `POST {}`
+  to `/functions/v1/platform-plans` that returns the reseller account's named
+  plans (`code`, `display_name`, `monthly_credits`, `free_credits_per_day`,
+  `monthly_credit_cap`, `rollover_months`, `max_projects`,
+  `max_published_projects`, `max_custom_domains`, `custom_domains_enabled`,
+  `max_compute_size`, `cloud_budget_cap`, `price_cents`, `currency`). Cached per
+  Api instance so repeated reads in one request cost a single round-trip.
+- **"Plan · named plan" product config option** (position 13 — appended at the
+  END; existing positional options 1-12 are unchanged) — a dropdown populated
+  live from `platform-plans`. Pick a plan to provision **by name**: its
+  `plan_code` is sent to `platform-create` / `platform-plan` and the
+  entitlements are resolved server-side, **overriding** options 1-12. Leave it
+  on "— None —" to keep using those positional options (the legacy path).
+- **`plan_code` on `platform-create` and `platform-plan`** — `CreateAccount`
+  and `ChangePackage` now send `plan_code` when a named plan is selected (and
+  fall back to the legacy `entitlements{}` mapping when it is not).
+- **Reseller Console "Plans" view** — a new page (toolbar → **Plans**) listing
+  the account's named plans and their entitlements, with the `code` to drop into
+  a product's "Plan" option.
+
+### Changed
+- `lib/Api.php`: `Api::VERSION` bumped to `1.4.0` (sent in the `User-Agent`).
+- Reseller Console addon `version` bumped to `1.4.0`.
+
+### Note
+- This is **not a pure drop-in**: it adds a 13th product config option. Overwrite
+  the two module folders as usual; the new "Plan" dropdown appears on each
+  product's Module Settings tab after the overwrite, defaulting to "— None —" so
+  existing products keep provisioning exactly as before. Options 1-12 retain
+  their saved values (still positional, only appended-to). The Plan dropdown and
+  the Plans view **degrade gracefully** when `platform-plans` is unreachable or
+  undeployed — they show an empty list with a note rather than erroring, and the
+  positional options continue to work.
+
 ## [1.3.7] - 2026-05-30
 
 Remove the redundant "Open dashboard in new tab" button from the client area.

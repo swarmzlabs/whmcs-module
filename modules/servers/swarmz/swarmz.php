@@ -183,7 +183,141 @@ function swarmz_ConfigOptions()
             'Default'      => '',
             'Description'  => 'Plan name shown to the customer in their dashboard (e.g. "Starter", "Pro"). Blank = no plan name shown.',
         ],
+        // 13 — NEW (appended at the END so it never shifts the load-bearing
+        // positions 1-12, which existing installs map by index). When a named
+        // plan is picked here, CreateAccount/ChangePackage send its plan_code to
+        // the platform (resolved server-side to entitlements) INSTEAD of building
+        // entitlements from options 1-12. Leave it on "— None —" to keep using
+        // the positional options 1-12 above (now effectively the legacy path).
+        'plan' => _swarmz_planConfigOption(),
     ];
+}
+
+/**
+ * Build the "Plan" dropdown (config option 13). Populates the choices live from
+ * the account's named plans via Helpers::fetchPlansSafe(), resolving the API key
+ * from whatever $params WHMCS makes available to swarmz_ConfigOptions() (the
+ * selected server's Password, falling back to the Reseller Console addon key).
+ *
+ * Graceful degradation (mirrors the platform-plan-refresh "endpoint
+ * maybe-undeployed" tolerance): if the platform-plans call fails or returns
+ * none — no key configured yet, the endpoint isn't deployed, a transport blip —
+ * we render a single-option dropdown whose only entry is the "— None —"
+ * sentinel, with a Description that tells the admin why no plans loaded and that
+ * the positional options above still apply. The product-config screen NEVER
+ * throws because of this.
+ *
+ * @return array A WHMCS config-option definition for a dropdown.
+ */
+function _swarmz_planConfigOption(): array
+{
+    $none = Helpers::PLAN_NONE_LABEL;
+    // WHMCS passes the active product-config $params to swarmz_ConfigOptions()
+    // via the global request, but not as a function argument; resolve the key
+    // from whatever the server form / addon expose. We build a minimal bag from
+    // the superglobals WHMCS populates on the product Module Settings tab, then
+    // let resolveApiKey fall back to the addon key.
+    $params = _swarmz_configOptionsParams();
+
+    $options = [$none => $none];
+    $note = '';
+    try {
+        $plans = Helpers::fetchPlansSafe($params);
+        if (!empty($plans)) {
+            foreach ($plans as $p) {
+                if (!is_array($p)) {
+                    continue;
+                }
+                $code = isset($p['code']) ? trim((string) $p['code']) : '';
+                if ($code === '') {
+                    continue;
+                }
+                $label = isset($p['display_name']) && trim((string) $p['display_name']) !== ''
+                    ? trim((string) $p['display_name'])
+                    : $code;
+                // Option key = the plan code we send as plan_code; label shown to
+                // the admin includes the price when present for at-a-glance choice.
+                $priceSuffix = '';
+                if (isset($p['price_cents']) && is_numeric($p['price_cents']) && (int) $p['price_cents'] > 0) {
+                    $cur = isset($p['currency']) ? strtoupper(trim((string) $p['currency'])) : 'USD';
+                    $priceSuffix = sprintf(' (%s %s)', number_format(((int) $p['price_cents']) / 100, 2), $cur !== '' ? $cur : 'USD');
+                }
+                $options[$code] = $label . $priceSuffix . '  [' . $code . ']';
+            }
+        } else {
+            $note = ' No named plans were loaded (the platform-plans endpoint may '
+                . 'be unavailable, or your API key is not set yet) — the positional '
+                . 'options above still apply. Set your key in the server Password '
+                . 'field or the Reseller Console addon, then reopen this tab.';
+        }
+    } catch (\Throwable $e) {
+        // Belt-and-braces — fetchPlansSafe already swallows, but never let the
+        // config screen throw.
+        $note = ' Could not load named plans — the positional options above apply.';
+    }
+
+    return [
+        'FriendlyName' => 'Plan · named plan',
+        'Type'         => 'dropdown',
+        'Options'      => $options,
+        'Default'      => $none,
+        'Description'  => 'Pick a named plan to provision by name — its entitlements '
+            . 'are resolved server-side, OVERRIDING options 1-12 above. Leave on '
+            . '"— None —" to keep using those positional options.' . $note,
+    ];
+}
+
+/**
+ * Assemble a best-effort $params bag for key/base-url resolution during
+ * swarmz_ConfigOptions(), where WHMCS does NOT pass a $params argument. We read
+ * the server's decrypted Password (the sk_live_ key) when the product-config
+ * screen exposes a selected server id; resolveApiKey then falls back to the
+ * Reseller Console addon key when that is blank, so a host that configured the
+ * key in one place still gets a populated dropdown.
+ *
+ * @return array
+ */
+function _swarmz_configOptionsParams(): array
+{
+    $params = [];
+
+    // The product Module Settings tab posts/serves `servertype`/`servergroup`/
+    // a selected server. WHMCS doesn't hand us $params here, so we attempt to
+    // resolve the chosen server's key from the request if present; otherwise we
+    // rely purely on the addon-key fallback inside resolveApiKey.
+    $serverId = 0;
+    foreach (['server', 'serverid', 'serverhostname'] as $k) {
+        if (isset($_REQUEST[$k]) && is_numeric($_REQUEST[$k])) {
+            $serverId = (int) $_REQUEST[$k];
+            break;
+        }
+    }
+
+    if ($serverId > 0 && function_exists('localAPI')) {
+        try {
+            $row = \WHMCS\Database\Capsule::table('tblservers')->where('id', $serverId)->first(['password', 'hostname', 'secure']);
+            if ($row) {
+                if (!empty($row->hostname)) {
+                    $params['serverhostname'] = (string) $row->hostname;
+                    $params['serversecure'] = !empty($row->secure);
+                }
+                if (!empty($row->password)) {
+                    try {
+                        $dec = localAPI('DecryptPassword', ['password2' => (string) $row->password]);
+                        if (isset($dec['password']) && is_string($dec['password']) && trim($dec['password']) !== '') {
+                            $params['serverpassword'] = trim($dec['password']);
+                        }
+                    } catch (\Throwable $e) {
+                        // fall through to addon-key resolution
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // ignore — addon-key fallback in resolveApiKey still applies
+        }
+    }
+
+    return $params;
 }
 
 // =========================================================================
@@ -201,9 +335,9 @@ function swarmz_CreateAccount(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     $externalRef = Helpers::buildExternalRef($serviceId);
-    $entitlements = Helpers::mapConfigOptionsToEntitlements($params);
     $whu = Helpers::buildWhu($params);
     $topup = Helpers::getDefaultCreditsTopup($params);
+    $planCode = Helpers::getSelectedPlanCode($params);
 
     $api = null;
     try {
@@ -212,8 +346,17 @@ function swarmz_CreateAccount(array $params)
         $body = [
             'external_ref' => $externalRef,
             'whu'          => $whu,
-            'entitlements' => $entitlements,
         ];
+
+        // Plan-by-name path: when the admin picked a named plan, send its
+        // plan_code and let the platform resolve the entitlements server-side
+        // (it OVERRIDES the positional options 1-12). Otherwise fall back to the
+        // legacy entitlements built from those positional options.
+        if ($planCode !== '') {
+            $body['plan_code'] = $planCode;
+        } else {
+            $body['entitlements'] = Helpers::mapConfigOptionsToEntitlements($params);
+        }
 
         $result = $api->postPlatform('platform-create', $body);
 
@@ -306,7 +449,7 @@ function swarmz_ChangePackage(array $params)
 {
     $serviceId = (int) ($params['serviceid'] ?? 0);
     $externalRef = Helpers::buildExternalRef($serviceId);
-    $entitlements = Helpers::mapConfigOptionsToEntitlements($params);
+    $planCode = Helpers::getSelectedPlanCode($params);
 
     $api = null;
     try {
@@ -314,8 +457,18 @@ function swarmz_ChangePackage(array $params)
 
         $body = [
             'external_ref' => $externalRef,
-            'entitlements' => $entitlements,
         ];
+
+        // Plan-by-name upgrade/downgrade: when a named plan is selected, send
+        // its plan_code (resolved server-side to entitlements, OVERRIDING the
+        // positional options 1-12). Otherwise push the legacy entitlements built
+        // from those positional options.
+        if ($planCode !== '') {
+            $body['plan_code'] = $planCode;
+        } else {
+            $body['entitlements'] = Helpers::mapConfigOptionsToEntitlements($params);
+        }
+
         $tenantId = Helpers::getTenantId($serviceId);
         if ($tenantId !== null) {
             $body['tenant_id'] = $tenantId;

@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.3.7';
+    const VERSION = '1.4.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -40,6 +40,9 @@ class Api
 
     /** @var string The sk_live_ bearer key (raw — never logged). */
     private $apiKey;
+
+    /** @var array<int,array>|null Per-instance cache of the listPlans() result. */
+    private $plansCache = null;
 
     /**
      * @param string $apiKey  e.g. "sk_live_abc123..."
@@ -116,6 +119,47 @@ class Api
             $body['external_ref'] = $refOrId;
         }
         return $this->postPlatform('platform-plan-refresh', $body);
+    }
+
+    /**
+     * List the reseller account's named plans. Maps to POST
+     * /functions/v1/platform-plans (key-authed, empty body).
+     *
+     * A "named plan" bundles a complete set of entitlements behind a stable
+     * `code` (resolved server-side when passed as plan_code to platform-create /
+     * platform-plan), so a host can pick a plan by name instead of hand-setting
+     * the positional entitlement options.
+     *
+     * Response contract (platform-plans/index.ts):
+     *   { ok: true, plans: [ {
+     *       code, display_name, monthly_credits, free_credits_per_day,
+     *       monthly_credit_cap, rollover_months, max_projects,
+     *       max_published_projects, max_custom_domains, custom_domains_enabled,
+     *       max_compute_size, cloud_budget_cap, price_cents, currency
+     *   }, … ] }
+     *
+     * Tolerant of an as-yet-undeployed endpoint: the CALLER decides how to
+     * degrade (the config-options dropdown and the Console swallow a failure and
+     * show an empty list / note). This method itself just returns the plans
+     * array on success and propagates the typed exception otherwise.
+     *
+     * The result is cached for the lifetime of this Api instance (this method
+     * may be called several times in one request — e.g. ConfigOptions render +
+     * a subsequent lookup), so repeated calls cost a single round-trip.
+     *
+     * @param bool $forceRefresh When true, bypass the per-instance cache.
+     * @return array<int,array> The plans array (possibly empty).
+     */
+    public function listPlans(bool $forceRefresh = false): array
+    {
+        if (!$forceRefresh && $this->plansCache !== null) {
+            return $this->plansCache;
+        }
+        $result = $this->postPlatform('platform-plans', []);
+        $body = $result['body'];
+        $plans = (isset($body['plans']) && is_array($body['plans'])) ? array_values($body['plans']) : [];
+        $this->plansCache = $plans;
+        return $plans;
     }
 
     /**

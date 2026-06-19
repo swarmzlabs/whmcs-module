@@ -402,6 +402,49 @@ namespace {
     $log('ChangePackage', swarmz_ChangePackage($bumped));
 
     // ------------------------------------------------------------------------
+    // Step 4b — listPlans + a plan_code create/change round-trip.
+    //
+    // The named-plans feature is OPTIONAL on the backend: the platform-plans
+    // endpoint may not be deployed, or the account may have no plans. We probe
+    // it and ONLY assert the round-trip when at least one plan exists — so this
+    // block skips cleanly (and is reported as skipped, not failed) otherwise.
+    // ------------------------------------------------------------------------
+    echo "\n--- Plans (platform-plans + plan_code round-trip) ---\n";
+    $plans = null;
+    try {
+        $planApi = \WHMCS\Module\Server\Swarmz\Helpers::makeApiClient($baseParams);
+        $plans = $planApi->listPlans();
+        // listPlans returns an array on success (possibly empty).
+        $log('Plans.List', null, is_array($plans));
+        // Second call must hit the per-instance cache (still an array, same shape).
+        $plansAgain = $planApi->listPlans();
+        $log('Plans.ListCached', null, is_array($plansAgain) && count($plansAgain) === count($plans));
+    } catch (\WHMCS\Module\Server\Swarmz\SwarmzApiException $e) {
+        // 404 (endpoint not deployed) or any non-2xx → feature unavailable; skip.
+        echo "  platform-plans unavailable (HTTP " . $e->getStatusCode() . " " . $e->getErrorCode() . ") — skipping plan_code round-trip.\n";
+        $plans = [];
+    } catch (\Throwable $e) {
+        echo "  platform-plans probe failed (" . $e->getMessage() . ") — skipping plan_code round-trip.\n";
+        $plans = [];
+    }
+
+    if (is_array($plans) && !empty($plans) && isset($plans[0]['code']) && trim((string) $plans[0]['code']) !== '') {
+        $planCode = (string) $plans[0]['code'];
+        echo "  using plan_code: $planCode\n";
+
+        // ChangePackage with a named plan selected (configoptions['plan'] = code).
+        // We exercise the plan_code path on the EXISTING tenant (created above),
+        // which is the realistic upgrade/downgrade flow.
+        $planParams = $baseParams;
+        $planParams['configoptions'] = ['plan' => $planCode];
+        $log('ChangePackage.PlanCode', swarmz_ChangePackage($planParams));
+    } else {
+        echo "  No named plans defined on this account — plan_code round-trip skipped.\n";
+        // Record as a non-failing, informational "skipped" outcome.
+        $log('Plans.RoundTripSkipped', null, true);
+    }
+
+    // ------------------------------------------------------------------------
     // Step 5 — SSO and verify the redirect host (must be either custom domain
     // or <slug>.swarmz.net).
     // ------------------------------------------------------------------------

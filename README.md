@@ -38,17 +38,41 @@ into their workspace — their custom domain when configured, otherwise
 **Usage reporting** — `platform-usage` feeds credits used, AI USD spend, and
 cloud USD spend back into WHMCS for usage-based billing or client-area display.
 
-**Per-product entitlements** — eleven WHMCS product config options on each
-product's **Module Settings** tab map 1:1 to the Swarmz entitlement schema.
-They're grouped by a `Group · field` label prefix:
+**Per-product entitlements** — WHMCS product config options on each product's
+**Module Settings** tab map 1:1 to the Swarmz entitlement schema. They're
+grouped by a `Group · field` label prefix:
 
 - **Credits** — free per day, free monthly cap, paid monthly grant, rollover (none / 1 / 2 cycles), signup bonus.
 - **Limit** — projects, published apps, custom domains (count), allow custom domains (on/off). For the count caps, **0 or blank = unlimited**.
 - **Compute** — max size (display lock; provisioning is Nano today).
 - **Cloud** — budget cap in USD (pauses the backend past that monthly spend).
+- **Plan** — *display name* shown to the customer, and a **named-plan dropdown** (see below).
 
 To offer tiers, create one product per plan and set different values. The
-options are positional — never reorder them in the module.
+options are positional — never reorder them in the module (new options are only
+ever appended at the end, so existing products keep their saved values).
+
+### Plan by name (named plans)
+
+Instead of hand-setting the per-plan entitlement options on every product, you
+can define **named plans** once in your Swarmz admin area and pick one per
+product. Each plan bundles a complete set of entitlements behind a stable
+`code` and carries a wholesale `price` for reference.
+
+- The **"Plan · named plan"** product config option is a dropdown populated live
+  from your account's plans via the key-authed `platform-plans` API. Pick a plan
+  and the module sends its `plan_code` to `platform-create` (on provision) and
+  `platform-plan` (on package change); the platform resolves the entitlements
+  server-side, **overriding** the positional options 1-12 above.
+- Leave the dropdown on **"— None —"** to keep using the positional options (the
+  legacy path) — both paths are fully supported.
+- The Reseller Console addon has a **Plans** view (toolbar → *Plans*) that lists
+  every named plan with its `code` and entitlements, so you can see what each
+  plan grants and which code to choose.
+- **Graceful degradation:** if the `platform-plans` endpoint isn't deployed on
+  your Swarmz API yet (or the key isn't configured), the dropdown renders with
+  only the "— None —" entry plus a short note, and the positional options keep
+  working — the product-config screen never errors.
 
 **Connection test** — the WHMCS "Test Connection" button validates the API key
 against `platform-sso` with a non-existent tenant id (read-only, no side

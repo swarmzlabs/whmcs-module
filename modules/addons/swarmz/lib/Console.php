@@ -92,6 +92,15 @@ class Console
             $out .= $this->renderTestConnection($period);
         }
 
+        // Dedicated "Plans" view — lists the account's named plans and their
+        // entitlements. A self-contained page (its own back link) so it doesn't
+        // need the usage round-trip the dashboard does.
+        if ($action === 'plans') {
+            $out .= $this->renderPlans();
+            $out .= '</div>';
+            return $out;
+        }
+
         try {
             $services = $this->gatherServices();
             $usage = $this->fetchUsage($period);
@@ -241,9 +250,10 @@ class Console
             $btns .= '<a class="swz-tab' . $active . '" href="' . $this->esc($this->link(['period' => $key])) . '">' . $this->esc($label) . '</a>';
         }
         $refresh = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period])) . '">&#x21bb; Refresh</a>';
+        $plans = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'plans'])) . '">Plans</a>';
         $test = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period, 'swarmz_action' => 'testconn'])) . '">Test connection</a>';
 
-        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $refresh . $test . '</div></div>';
+        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $refresh . $test . '</div></div>';
     }
 
     private function renderTestConnection(string $period): string
@@ -254,6 +264,139 @@ class Console
         } catch (\Throwable $e) {
             return $this->notice('danger', 'Connection failed: <code>' . $this->esc($this->scrub($e->getMessage())) . '</code>');
         }
+    }
+
+    /**
+     * Render the "Plans" view — the account's named plans (from the new
+     * key-authed platform-plans endpoint) as a table of their entitlements, so
+     * the host can see at a glance what each plan grants and which `code` to put
+     * in a product's "Plan" config option.
+     *
+     * Reuses the provisioning module's Api::listPlans(). Degrades gracefully:
+     * an unreachable / undeployed endpoint, or zero plans, renders a tidy note
+     * instead of an error (mirrors the dashboard's tolerance).
+     */
+    private function renderPlans(): string
+    {
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '</div></div>';
+        $title = '<h3 class="swz-section-title">Named plans</h3>';
+        $intro = '<p class="swz-muted" style="margin:0 0 10px;">Each plan bundles a full set of '
+            . 'entitlements behind a stable <code>code</code>. Put a plan&rsquo;s code in a '
+            . 'product&rsquo;s <strong>&ldquo;Plan&rdquo;</strong> module config option to provision by name '
+            . '&mdash; the entitlements are resolved server-side, overriding the positional options.</p>';
+
+        $plans = [];
+        try {
+            /** @var \WHMCS\Module\Server\Swarmz\Api $api */
+            $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
+            $plans = $api->listPlans();
+        } catch (\WHMCS\Module\Server\Swarmz\SwarmzApiException $e) {
+            $code = $e->getStatusCode();
+            $why = ($code === 404)
+                ? 'the <code>platform-plans</code> endpoint isn&rsquo;t deployed on your Swarmz API yet'
+                : ('the API returned <code>' . $this->esc($this->scrub($e->getMessage())) . '</code>');
+            return $back . $title . $this->notice('warning',
+                'No named plans could be loaded &mdash; ' . $why . '. You can still configure '
+                . 'plans with the per-product positional options on each product&rsquo;s Module Settings tab.'
+            );
+        } catch (\Throwable $e) {
+            return $back . $title . $this->notice('danger',
+                'Could not load plans: <code>' . $this->esc($this->scrub($e->getMessage())) . '</code>'
+            );
+        }
+
+        if (empty($plans)) {
+            return $back . $title . $intro . $this->notice('info',
+                'Your account has no named plans defined yet. Define them in your Swarmz admin area, '
+                . 'or keep using the per-product positional entitlement options.'
+            );
+        }
+
+        $rows = '';
+        foreach ($plans as $p) {
+            if (!is_array($p)) {
+                continue;
+            }
+            $rows .= '<tr>'
+                . '<td>' . $this->esc((string) ($p['display_name'] ?? ($p['code'] ?? '—'))) . '</td>'
+                . '<td><code>' . $this->esc((string) ($p['code'] ?? '')) . '</code></td>'
+                . '<td class="swz-num">' . $this->planNum($p['monthly_credits'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planNum($p['free_credits_per_day'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planNum($p['monthly_credit_cap'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planNum($p['rollover_months'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planLimit($p['max_projects'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planLimit($p['max_published_projects'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planDomains($p) . '</td>'
+                . '<td>' . $this->esc((string) ($p['max_compute_size'] ?? '—')) . '</td>'
+                . '<td class="swz-num">' . $this->planCloudCap($p['cloud_budget_cap'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planPrice($p) . '</td>'
+                . '</tr>';
+        }
+
+        $table = '<div class="swz-tablewrap"><table class="swz-table">'
+            . '<thead><tr>'
+            . '<th>Plan</th><th>Code</th>'
+            . '<th class="swz-num">Monthly credits</th><th class="swz-num">Free/day</th>'
+            . '<th class="swz-num">Monthly cap</th><th class="swz-num">Rollover</th>'
+            . '<th class="swz-num">Projects</th><th class="swz-num">Published</th>'
+            . '<th class="swz-num">Domains</th><th>Compute</th>'
+            . '<th class="swz-num">Cloud cap</th><th class="swz-num">Price</th>'
+            . '</tr></thead><tbody>' . $rows . '</tbody></table></div>'
+            . '<p class="swz-muted" style="margin-top:10px;">Limits: &ldquo;&infin;&rdquo; = unlimited. '
+            . 'Price is your wholesale plan price from Swarmz; set your retail price in WHMCS product pricing.</p>';
+
+        return $back . $title . $intro . $table;
+    }
+
+    /** Format a numeric plan field; null/blank → "—". */
+    private function planNum($v): string
+    {
+        if ($v === null || $v === '') {
+            return '—';
+        }
+        return is_numeric($v) ? number_format((float) $v) : $this->esc((string) $v);
+    }
+
+    /** Format a capped limit where null/0 = unlimited (sentinel D1). */
+    private function planLimit($v): string
+    {
+        if ($v === null || $v === '' || (is_numeric($v) && (int) $v === 0)) {
+            return '&infin;';
+        }
+        return is_numeric($v) ? number_format((float) $v) : $this->esc((string) $v);
+    }
+
+    /** Domains column: respects the custom_domains_enabled master switch. */
+    private function planDomains(array $p): string
+    {
+        $enabled = array_key_exists('custom_domains_enabled', $p)
+            ? (bool) $p['custom_domains_enabled']
+            : true;
+        if (!$enabled) {
+            return 'off';
+        }
+        return $this->planLimit($p['max_custom_domains'] ?? null);
+    }
+
+    /** Cloud budget cap: null/blank → "none". */
+    private function planCloudCap($v): string
+    {
+        if ($v === null || $v === '') {
+            return 'none';
+        }
+        return is_numeric($v) ? $this->money((float) $v) : $this->esc((string) $v);
+    }
+
+    /** Plan price from price_cents + currency; 0/absent → "—". */
+    private function planPrice(array $p): string
+    {
+        if (!isset($p['price_cents']) || !is_numeric($p['price_cents']) || (int) $p['price_cents'] <= 0) {
+            return '—';
+        }
+        $cur = isset($p['currency']) ? (string) $p['currency'] : 'USD';
+        return $this->moneyCur(((int) $p['price_cents']) / 100, $cur);
     }
 
     private function renderSummary(array $services, array $usage, string $period): string

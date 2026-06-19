@@ -43,6 +43,12 @@ class Helpers
     const ADDON_MODULE = 'swarmz';
 
     /**
+     * Sentinel label for the "no plan selected" entry in the Plan dropdown.
+     * Selecting it means "use the legacy positional entitlement options".
+     */
+    const PLAN_NONE_LABEL = '— None (use options above) —';
+
+    /**
      * Build the WHMCS-side idempotency key passed to swarmz as `external_ref`.
      * Format: "whmcs:<serviceid>". A retried provision uses the same key.
      */
@@ -364,6 +370,66 @@ class Helpers
         }
 
         return new Api($apiKey, $baseUrl);
+    }
+
+    /**
+     * Pull the selected plan_code (the new "Plan" dropdown, appended AFTER the
+     * load-bearing positional options) from the WHMCS $params bag.
+     *
+     * The dropdown's option keys are the plan `code`s, so the stored value IS
+     * the plan_code. WHMCS exposes it both positionally (configoption13, since
+     * it is the 13th option) and by name in configoptions['plan']. We read the
+     * named form first (robust to any future reordering of the EARLIER options —
+     * which must never happen, but the named key is self-describing) then fall
+     * back to the positional column.
+     *
+     * Returns '' when no plan is selected (the dropdown's blank "— None —"
+     * sentinel), in which case the caller uses the legacy entitlements mapping.
+     *
+     * @param array $params
+     * @return string The selected plan code, or '' when none.
+     */
+    public static function getSelectedPlanCode(array $params): string
+    {
+        $opts = isset($params['configoptions']) && is_array($params['configoptions']) ? $params['configoptions'] : [];
+
+        $raw = '';
+        if (isset($opts['plan']) && is_string($opts['plan'])) {
+            $raw = $opts['plan'];
+        } elseif (isset($params['configoption13']) && is_string($params['configoption13'])) {
+            $raw = $params['configoption13'];
+        }
+
+        $raw = trim($raw);
+        // The blank sentinel label used in the dropdown ("— None —") must never
+        // be treated as a real code.
+        if ($raw === '' || $raw === self::PLAN_NONE_LABEL) {
+            return '';
+        }
+        return $raw;
+    }
+
+    /**
+     * Best-effort fetch of the account's named plans for UI population, tolerant
+     * of an undeployed / unreachable platform-plans endpoint (mirrors the
+     * platform-plan-refresh "endpoint maybe-undeployed" tolerance).
+     *
+     * Returns an empty array on ANY failure (no key, transport error, 404
+     * because the endpoint isn't deployed yet, a non-2xx, …) so the caller can
+     * render an empty dropdown with a note rather than throwing in the WHMCS
+     * product-config screen.
+     *
+     * @param array $params The WHMCS $params bag (for key + base-url resolution).
+     * @return array<int,array> The plans array (possibly empty).
+     */
+    public static function fetchPlansSafe(array $params): array
+    {
+        try {
+            $api = self::makeApiClient($params);
+            return $api->listPlans();
+        } catch (\Throwable $e) {
+            return [];
+        }
     }
 
     // ---------------- Reseller Console (addon) settings ----------------
