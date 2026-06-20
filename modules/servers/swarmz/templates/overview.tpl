@@ -8,10 +8,11 @@
  * Credits are THREE separate pools — never one merged number:
  *   1. Free credits    — daily allowance (resets 00:00 UTC), optional monthly cap.
  *   2. Monthly credits — paid grant, resets on the billing cycle, may roll over.
- *   3. Top-up credits  — one-off / purchased (signup bonus + later top-ups).
+ *   3. Top-up credits  — one-off / purchased.
  *
- * Values are the live per-pool balances when available, else the configured
- * plan allowances — so the numbers always match what the host configured.
+ * Values + plan caps come entirely from the platform-usage API response (live
+ * per-pool balances + balances.by_workspace[].caps); the module no longer holds
+ * any locally-configured allowances.
  *
  * Provided variables (set by swarmz_ClientArea):
  *   tenantId             string|null

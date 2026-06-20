@@ -5,6 +5,56 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-06-20
+
+Plan-by-name only. The legacy positional entitlement config options are removed
+— a product now provisions purely from a selected named plan.
+
+### BREAKING
+- **All legacy positional product config options removed** — `credits_per_day`,
+  `monthly_credit_cap`, `max_projects`, `max_custom_domains`, `max_compute_size`,
+  `cloud_budget_cap`, `default_credits_topup`, `monthly_credits`,
+  `rollover_months`, `max_published_projects`, `custom_domains_enabled`, and
+  `plan_name`. The product's Module Settings tab now has a **single** option: the
+  **Plan** dropdown. **A Swarmz plan MUST be selected** — `CreateAccount` and
+  `ChangePackage` fail with a clear module error ("select a Swarmz plan on the
+  product's Module Settings tab") when no plan is chosen.
+- **Action required:** re-save each existing Swarmz product and pick a plan from
+  the dropdown. Until a product has a plan selected, its provisioning /
+  package-change calls will fail with the error above. (Already-provisioned
+  workspaces keep running; only new create / change operations need the plan.)
+
+### Changed
+- `CreateAccount` / `ChangePackage` send **only** `plan_code` (+ `external_ref`,
+  and `whu` on create). The `entitlements{}` fallback is gone; the platform
+  resolves the full entitlement set from the plan server-side.
+- **Client-area + admin stats now read exclusively from the platform-usage API**
+  (`usage` + `balances` + `balances.by_workspace[].caps`). The displayed plan
+  caps (custom-domain / published-app limits, cloud budget cap) and the three
+  credit pools no longer come from any locally-stored option. The admin Console's
+  cloud-spend-vs-cap figure is derived from the per-workspace `cloud_budget_cap`
+  cap the API returns, not a config column.
+- The initial signup credit top-up is removed (it was tied to the deleted
+  `default_credits_topup` option); plans define included credits.
+- `lib/Api.php`: `Api::VERSION` bumped to `1.5.0` (sent in the `User-Agent`).
+- Reseller Console addon `version` bumped to `1.5.0`.
+
+### Removed
+- `Helpers::mapConfigOptionsToEntitlements()` and every positional-option parser
+  it used (`getDefaultCreditsTopup`, `parseIntOrNull`, `parseIntOrZero`,
+  `parseNumericOrNull`, `parseComputeSize`, `parseRolloverMonths`,
+  `resolveCustomDomainsEnabled`, `truthy`, the `ALLOWED_COMPUTE_SIZES` const).
+- The admin Console's `serviceModuleConfigOption()` reader (read the deleted
+  `configoption6`).
+
+### Note
+- Kept unchanged: `external_ref = whmcs:<serviceid>` (provision idempotency key),
+  the `tenant_id` workspace identifier on all post-create calls, the named-plan
+  fetch (`Api::listPlans` / `platform-plans`), the Reseller Console "Plans" view,
+  and the `platform-plan-refresh` cycle roll. `test/smoke.php` now lists plans
+  first and provisions with a plan code (skipping the lifecycle when the account
+  has no plans).
+
 ## [1.4.0] - 2026-06-19
 
 Plan-by-name: provision and change plans by picking a named plan instead of

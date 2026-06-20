@@ -168,9 +168,11 @@ class Console
 
     /**
      * One account-wide /platform-usage call. Returns a tenant_id => usage map
-     * plus account totals for the period.
+     * plus account totals for the period, AND a tenant_id => plan-caps map drawn
+     * from the response's `balances.by_workspace[].caps` (the only source of plan
+     * limits now that the positional config options are gone).
      *
-     * @return array{map:array<string,array>,totals:array,period:array}
+     * @return array{map:array<string,array>,caps:array<string,array>,totals:array,period:array}
      */
     private function fetchUsage(string $period): array
     {
@@ -178,6 +180,7 @@ class Console
         $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
         $res = $api->postPlatform('platform-usage', ['period' => $period]);
         $usage = (isset($res['body']['usage']) && is_array($res['body']['usage'])) ? $res['body']['usage'] : [];
+        $balances = (isset($res['body']['balances']) && is_array($res['body']['balances'])) ? $res['body']['balances'] : [];
 
         $map = [];
         $byWs = isset($usage['by_workspace']) && is_array($usage['by_workspace']) ? $usage['by_workspace'] : [];
@@ -192,8 +195,20 @@ class Console
             ];
         }
 
+        // Per-workspace plan caps from the balances section. Keyed by
+        // workspace_id (= the tenant_id stored on each WHMCS service).
+        $caps = [];
+        $byWsBal = isset($balances['by_workspace']) && is_array($balances['by_workspace']) ? $balances['by_workspace'] : [];
+        foreach ($byWsBal as $w) {
+            if (empty($w['workspace_id']) || !isset($w['caps']) || !is_array($w['caps'])) {
+                continue;
+            }
+            $caps[(string) $w['workspace_id']] = $w['caps'];
+        }
+
         return [
             'map'    => $map,
+            'caps'   => $caps,
             'totals' => [
                 'credits' => (float) ($usage['credits_used'] ?? 0),
                 'ai'      => (float) ($usage['usd_credits'] ?? 0),
@@ -283,9 +298,9 @@ class Console
             . '</div></div>';
         $title = '<h3 class="swz-section-title">Named plans</h3>';
         $intro = '<p class="swz-muted" style="margin:0 0 10px;">Each plan bundles a full set of '
-            . 'entitlements behind a stable <code>code</code>. Put a plan&rsquo;s code in a '
+            . 'entitlements behind a stable <code>code</code>. Select a plan in a '
             . 'product&rsquo;s <strong>&ldquo;Plan&rdquo;</strong> module config option to provision by name '
-            . '&mdash; the entitlements are resolved server-side, overriding the positional options.</p>';
+            . '&mdash; the entitlements are resolved server-side from the plan.</p>';
 
         $plans = [];
         try {
@@ -298,8 +313,9 @@ class Console
                 ? 'the <code>platform-plans</code> endpoint isn&rsquo;t deployed on your Swarmz API yet'
                 : ('the API returned <code>' . $this->esc($this->scrub($e->getMessage())) . '</code>');
             return $back . $title . $this->notice('warning',
-                'No named plans could be loaded &mdash; ' . $why . '. You can still configure '
-                . 'plans with the per-product positional options on each product&rsquo;s Module Settings tab.'
+                'No named plans could be loaded &mdash; ' . $why . '. Provisioning requires a '
+                . 'plan, so define your plans in the Swarmz admin area and ensure the endpoint '
+                . 'is deployed, then select one on each product&rsquo;s Module Settings tab.'
             );
         } catch (\Throwable $e) {
             return $back . $title . $this->notice('danger',
@@ -309,8 +325,8 @@ class Console
 
         if (empty($plans)) {
             return $back . $title . $intro . $this->notice('info',
-                'Your account has no named plans defined yet. Define them in your Swarmz admin area, '
-                . 'or keep using the per-product positional entitlement options.'
+                'Your account has no named plans defined yet. Define them in your Swarmz admin area '
+                . '&mdash; a plan must be selected on each product before it can provision.'
             );
         }
 
@@ -491,8 +507,9 @@ class Console
         $consumedUsd = (float) ($totals['ai'] ?? 0);
         $cloudUsd = (float) ($totals['cloud'] ?? 0);
 
-        // Aggregate cloud cap across active services that have one configured.
-        $capInfo = $this->aggregateCloudCap($services);
+        // Aggregate cloud cap across active services from the plan caps the
+        // platform-usage API returned (per-workspace caps.cloud_budget_cap).
+        $capInfo = $this->aggregateCloudCap($services, $usage);
 
         $cloudCard = $this->money($cloudUsd);
         if ($capInfo['cap'] > 0) {
@@ -524,66 +541,39 @@ class Console
     }
 
     /**
-     * Sum the configured cloud_budget_cap (config option 6) across the active
-     * swarmz services. Returns { cap:float, count:int } where cap is the total
-     * configured ceiling (0 when none of the active plans set one).
+     * Sum the cloud_budget_cap across the active swarmz services, drawn from the
+     * plan caps the platform-usage API returned (caps.cloud_budget_cap, keyed by
+     * tenant_id). Returns { cap:float, count:int } where cap is the total
+     * ceiling (0 when none of the active plans set one).
      *
      * @param array<int,\stdClass> $services
+     * @param array{caps:array<string,array>} $usage
      * @return array{cap:float,count:int}
      */
-    private function aggregateCloudCap(array $services): array
+    private function aggregateCloudCap(array $services, array $usage): array
     {
         $cap = 0.0;
         $count = 0;
-        $byProduct = [];
-        try {
-            foreach ($services as $s) {
-                if (strtolower((string) $s->status) !== 'active') {
-                    continue;
-                }
-                $serviceId = (int) $s->serviceid;
-                if ($serviceId <= 0) {
-                    continue;
-                }
-                // cloud_budget_cap is module config option 6. WHMCS stores
-                // module ConfigOptions (as defined by swarmz_ConfigOptions) in
-                // tblhosting.configoption6 — NOT the configurable-options tables.
-                $val = $this->serviceModuleConfigOption($serviceId, 6);
-                if ($val === null || $val === '' || !is_numeric($val)) {
-                    continue;
-                }
-                $f = (float) $val;
-                if ($f > 0) {
-                    $cap += $f;
-                    $count++;
-                }
+        $capsByTenant = (isset($usage['caps']) && is_array($usage['caps'])) ? $usage['caps'] : [];
+        foreach ($services as $s) {
+            if (strtolower((string) $s->status) !== 'active') {
+                continue;
             }
-        } catch (\Throwable $e) {
-            // best-effort; return whatever we accumulated
+            $tenant = (string) $s->tenantid;
+            if ($tenant === '' || !isset($capsByTenant[$tenant]) || !is_array($capsByTenant[$tenant])) {
+                continue;
+            }
+            $val = $capsByTenant[$tenant]['cloud_budget_cap'] ?? null;
+            if ($val === null || $val === '' || !is_numeric($val)) {
+                continue;
+            }
+            $f = (float) $val;
+            if ($f > 0) {
+                $cap += $f;
+                $count++;
+            }
         }
         return ['cap' => $cap, 'count' => $count];
-    }
-
-    /**
-     * Read a service's Nth module config option (1-based) — the values defined
-     * by swarmz_ConfigOptions() and stored by WHMCS in tblhosting.configoptionN.
-     * Returns null when the column is empty/absent.
-     *
-     * @return string|null
-     */
-    private function serviceModuleConfigOption(int $serviceId, int $n): ?string
-    {
-        $col = 'configoption' . $n;
-        try {
-            $row = Capsule::table('tblhosting')->where('id', $serviceId)->first([$col]);
-            if (!$row || !isset($row->{$col})) {
-                return null;
-            }
-            $v = trim((string) $row->{$col});
-            return $v === '' ? null : $v;
-        } catch (\Throwable $e) {
-            return null;
-        }
     }
 
     /**

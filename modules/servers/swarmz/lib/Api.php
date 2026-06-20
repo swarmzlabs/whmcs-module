@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.4.0';
+    const VERSION = '1.5.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -127,8 +127,7 @@ class Api
      *
      * A "named plan" bundles a complete set of entitlements behind a stable
      * `code` (resolved server-side when passed as plan_code to platform-create /
-     * platform-plan), so a host can pick a plan by name instead of hand-setting
-     * the positional entitlement options.
+     * platform-plan); picking a plan by name is the only way to provision.
      *
      * Response contract (platform-plans/index.ts):
      *   { ok: true, plans: [ {

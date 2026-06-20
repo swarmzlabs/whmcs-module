@@ -2,7 +2,7 @@
 /**
  * Swarmz WHMCS Module - Helpers
  *
- * Pure-function helpers: config-options → entitlements mapping, external_ref
+ * Pure-function helpers: selected-plan resolution, named-plan fetch, external_ref
  * builder, custom-field readers/writers (auto-create the field on first use).
  *
  * @copyright Swarmz Labs Ltd.
@@ -31,11 +31,6 @@ class Helpers
     /** Custom-field name used to cache the latest usage snapshot (JSON) for the client area. */
     const CUSTOM_FIELD_USAGE_CACHE = 'Swarmz Usage Cache';
 
-    /** Allowed compute-size values for max_compute_size. */
-    const ALLOWED_COMPUTE_SIZES = [
-        'nano', 'micro', 'small', 'medium', 'large', 'xlarge', '2xl', '4xl',
-    ];
-
     /** Default base URL used if the WHMCS server hostname is blank. */
     const DEFAULT_API_BASE_URL = 'https://api.swarmz.net';
 
@@ -44,9 +39,10 @@ class Helpers
 
     /**
      * Sentinel label for the "no plan selected" entry in the Plan dropdown.
-     * Selecting it means "use the legacy positional entitlement options".
+     * Selecting it means no plan is chosen yet — provisioning is refused until a
+     * real plan is picked.
      */
-    const PLAN_NONE_LABEL = '— None (use options above) —';
+    const PLAN_NONE_LABEL = '— Select a plan —';
 
     /**
      * Build the WHMCS-side idempotency key passed to swarmz as `external_ref`.
@@ -55,160 +51,6 @@ class Helpers
     public static function buildExternalRef($serviceId): string
     {
         return 'whmcs:' . (string) $serviceId;
-    }
-
-    /**
-     * Translate WHMCS `$params['configoption1..11']` into the swarmz
-     * entitlements{} JSON.
-     *
-     * Per §10 of reseller-functions-rewrite.md + §3/§2 of
-     * reseller-production-buildout.md:
-     *   1 credits_per_day          ""  → null (unlimited daily-free)
-     *   2 monthly_credit_cap       ""  → null (no monthly-free ceiling)
-     *   3 max_projects             ""  → null / 0 = unlimited; N = hard cap
-     *   4 max_custom_domains       ""  → 0   (0 = UNLIMITED; N = hard cap)
-     *   5 max_compute_size         dropdown ("nano".."4xl"), default "nano"
-     *   6 cloud_budget_cap         ""  → null (no ceiling, USD)
-     *   7 default_credits_topup    ""  → 0   (consumed at create-time only)
-     *   8 monthly_credits          ""  → 0   (paid monthly grant; 0 = none)
-     *   9 rollover_months          dropdown 0|1|2 (None / 1 month / 2 months)
-     *  10 max_published_projects   ""  → 0   (0 = UNLIMITED; N = hard cap)
-     *  11 custom_domains_enabled   yes/no → bool (default true)
-     *
-     * SENTINEL CONVENTION (decision D1, reseller-production-buildout.md):
-     * for max_custom_domains, max_projects and max_published_projects a value
-     * of **0 means UNLIMITED**, and a positive integer is a hard cap. To fully
-     * disable custom domains on a plan, set custom_domains_enabled=no (D2) —
-     * 0 still means "unlimited", never "disabled".
-     *
-     * `default_credits_topup` (option 7) is NOT an entitlement; it stays in
-     * $params and is applied by CreateAccount via /platform-topup. We strip it
-     * from the returned array.
-     *
-     * @return array<string,mixed>
-     */
-    public static function mapConfigOptionsToEntitlements(array $params): array
-    {
-        $get = function ($keys) use ($params) {
-            foreach ($keys as $k) {
-                if (isset($params[$k]) && $params[$k] !== '' && $params[$k] !== null) {
-                    return $params[$k];
-                }
-            }
-            return null;
-        };
-
-        // configoptionN is the legacy numeric form; named keys live in configoptions[].
-        $opts = isset($params['configoptions']) && is_array($params['configoptions']) ? $params['configoptions'] : [];
-
-        $creditsPerDay        = $get(['configoption1'])  ?? ($opts['credits_per_day']        ?? null);
-        $monthlyCreditCap     = $get(['configoption2'])  ?? ($opts['monthly_credit_cap']     ?? null);
-        $maxProjects          = $get(['configoption3'])  ?? ($opts['max_projects']           ?? null);
-        $maxCustomDomains     = $get(['configoption4'])  ?? ($opts['max_custom_domains']     ?? null);
-        $maxComputeSize       = $get(['configoption5'])  ?? ($opts['max_compute_size']       ?? null);
-        $cloudBudgetCap       = $get(['configoption6'])  ?? ($opts['cloud_budget_cap']       ?? null);
-        // default_credits_topup is configoption7; resolved separately.
-        $monthlyCredits       = $get(['configoption8'])  ?? ($opts['monthly_credits']        ?? null);
-        $rolloverMonths       = $get(['configoption9'])  ?? ($opts['rollover_months']        ?? null);
-        $maxPublishedProjects = $get(['configoption10']) ?? ($opts['max_published_projects'] ?? null);
-        // custom_domains_enabled (option 11): a yes/no field. Resolved via a
-        // dedicated reader so an unticked "no" is honoured rather than being
-        // swallowed as "absent → default yes".
-        $customDomainsEnabled = self::resolveCustomDomainsEnabled($params, $opts);
-
-        // plan_name (option 12): the display-only plan label shown to the WHU in
-        // their dashboard (e.g. "Starter", "Pro"). Added at the END so it never
-        // shifts the load-bearing 1..11 positions.
-        $planNameRaw = $get(['configoption12']) ?? ($opts['plan_name'] ?? null);
-
-        $entitlements = [
-            'credits_per_day'        => self::parseIntOrNull($creditsPerDay),
-            'monthly_credit_cap'     => self::parseIntOrNull($monthlyCreditCap),
-            'max_projects'           => self::parseIntOrNull($maxProjects),
-            'max_custom_domains'     => self::parseIntOrZero($maxCustomDomains),
-            'max_compute_size'       => self::parseComputeSize($maxComputeSize),
-            'cloud_budget_cap'       => self::parseNumericOrNull($cloudBudgetCap),
-            'monthly_credits'        => self::parseIntOrZero($monthlyCredits),
-            'rollover_months'        => self::parseRolloverMonths($rolloverMonths),
-            'max_published_projects' => self::parseIntOrZero($maxPublishedProjects),
-            'custom_domains_enabled' => $customDomainsEnabled,
-        ];
-
-        // Only include plan_name when the admin actually set one — a blank value
-        // shouldn't overwrite an existing label as an empty string.
-        $planName = is_string($planNameRaw) ? trim($planNameRaw) : '';
-        if ($planName !== '') {
-            $entitlements['plan_name'] = mb_substr($planName, 0, 40);
-        }
-
-        return $entitlements;
-    }
-
-    /**
-     * Resolve the custom_domains_enabled boolean (config option 11).
-     *
-     * A WHMCS yes/no config option persists 'on' when ticked and '' (or absent)
-     * when not — so we cannot use the "empty = use default" rule the numeric
-     * options rely on. Default is TRUE (custom domains allowed) per decision D2;
-     * an explicit unticked value means the host wants custom domains OFF.
-     */
-    private static function resolveCustomDomainsEnabled(array $params, array $opts): bool
-    {
-        // Prefer the numeric configoption11 if the key is present at all.
-        if (array_key_exists('configoption11', $params)) {
-            return self::truthy($params['configoption11']);
-        }
-        if (array_key_exists('custom_domains_enabled', $opts)) {
-            return self::truthy($opts['custom_domains_enabled']);
-        }
-        // Field not present in this $params bag (e.g. a context that doesn't
-        // pass config options) → default allowed.
-        return true;
-    }
-
-    /**
-     * Interpret a WHMCS yes/no-ish value as a boolean. Accepts the various
-     * encodings WHMCS uses across versions ('on','1','yes','true') plus the
-     * dropdown label "Yes"; everything else (including '' / '0' / 'No') is false.
-     */
-    private static function truthy($value): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-        $v = strtolower(trim((string) $value));
-        return in_array($v, ['on', '1', 'yes', 'true', 'checked'], true);
-    }
-
-    /**
-     * Parse the rollover_months dropdown (config option 9) into 0, 1 or 2.
-     * Accepts either the raw integer or the friendly label
-     * ("None"/"1 month"/"2 months"). Anything unrecognised → 0 (no rollover).
-     */
-    private static function parseRolloverMonths($value): int
-    {
-        if ($value === null || $value === '') {
-            return 0;
-        }
-        // Friendly labels first.
-        $v = strtolower(trim((string) $value));
-        if ($v === 'none' || $v === '0') {
-            return 0;
-        }
-        if (strpos($v, '1') === 0) {
-            return 1;
-        }
-        if (strpos($v, '2') === 0) {
-            return 2;
-        }
-        $n = filter_var($value, FILTER_VALIDATE_INT);
-        if ($n === false) {
-            return 0;
-        }
-        if ($n < 0) {
-            return 0;
-        }
-        return $n > 2 ? 2 : (int) $n;
     }
 
     /**
@@ -269,16 +111,6 @@ class Helpers
             return false;
         }
         return (bool) preg_match('/^\d{4}-\d{2}-\d{2}/', $date);
-    }
-
-    /**
-     * Pull configoption7 (default_credits_topup) as a non-negative integer.
-     */
-    public static function getDefaultCreditsTopup(array $params): int
-    {
-        $value = $params['configoption7'] ?? ($params['configoptions']['default_credits_topup'] ?? '0');
-        $n = self::parseIntOrZero($value);
-        return $n > 0 ? $n : 0;
     }
 
     /**
@@ -373,18 +205,17 @@ class Helpers
     }
 
     /**
-     * Pull the selected plan_code (the new "Plan" dropdown, appended AFTER the
-     * load-bearing positional options) from the WHMCS $params bag.
+     * Pull the selected plan_code (the "Plan" dropdown — the only product config
+     * option) from the WHMCS $params bag.
      *
      * The dropdown's option keys are the plan `code`s, so the stored value IS
-     * the plan_code. WHMCS exposes it both positionally (configoption13, since
-     * it is the 13th option) and by name in configoptions['plan']. We read the
-     * named form first (robust to any future reordering of the EARLIER options —
-     * which must never happen, but the named key is self-describing) then fall
-     * back to the positional column.
+     * the plan_code. WHMCS exposes it both by name in configoptions['plan'] and
+     * positionally (configoption1, as it is the only/first option). We read the
+     * named form first (self-describing), then fall back to the positional
+     * column.
      *
-     * Returns '' when no plan is selected (the dropdown's blank "— None —"
-     * sentinel), in which case the caller uses the legacy entitlements mapping.
+     * Returns '' when no plan is selected (the dropdown's "— Select a plan —"
+     * sentinel), in which case the caller refuses to provision.
      *
      * @param array $params
      * @return string The selected plan code, or '' when none.
@@ -396,13 +227,12 @@ class Helpers
         $raw = '';
         if (isset($opts['plan']) && is_string($opts['plan'])) {
             $raw = $opts['plan'];
-        } elseif (isset($params['configoption13']) && is_string($params['configoption13'])) {
-            $raw = $params['configoption13'];
+        } elseif (isset($params['configoption1']) && is_string($params['configoption1'])) {
+            $raw = $params['configoption1'];
         }
 
         $raw = trim($raw);
-        // The blank sentinel label used in the dropdown ("— None —") must never
-        // be treated as a real code.
+        // The "— Select a plan —" sentinel must never be treated as a real code.
         if ($raw === '' || $raw === self::PLAN_NONE_LABEL) {
             return '';
         }
@@ -823,50 +653,4 @@ class Helpers
         return (int) $n;
     }
 
-    // ---------------- internal parsers ----------------
-
-    private static function parseIntOrNull($value): ?int
-    {
-        if ($value === null || $value === '' || $value === false) {
-            return null;
-        }
-        if (is_string($value) && trim($value) === '') {
-            return null;
-        }
-        $n = filter_var($value, FILTER_VALIDATE_INT);
-        if ($n === false) {
-            return null;
-        }
-        return $n < 0 ? null : (int) $n;
-    }
-
-    private static function parseIntOrZero($value): int
-    {
-        $n = self::parseIntOrNull($value);
-        return $n === null ? 0 : $n;
-    }
-
-    private static function parseNumericOrNull($value): ?float
-    {
-        if ($value === null || $value === '' || $value === false) {
-            return null;
-        }
-        if (is_string($value) && trim($value) === '') {
-            return null;
-        }
-        if (!is_numeric($value)) {
-            return null;
-        }
-        $f = (float) $value;
-        return $f < 0 ? null : $f;
-    }
-
-    private static function parseComputeSize($value): string
-    {
-        if (!is_string($value)) {
-            return 'nano';
-        }
-        $v = strtolower(trim($value));
-        return in_array($v, self::ALLOWED_COMPUTE_SIZES, true) ? $v : 'nano';
-    }
 }
