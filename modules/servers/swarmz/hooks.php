@@ -167,6 +167,17 @@ function _swarmz_cron_reconcile(): void
 
     // ── 3. Status reconcile: pull terminated workspaces back into WHMCS. ───
     _swarmz_cron_reconcileStatuses($api, $services);
+
+    // ── 4. Renewal safety net. InvoicePaid is best-effort: if the swarmz API
+    //      was down at the exact paid-invoice moment, or the WHMCS cron didn't
+    //      run that day, the credit cycle would never roll and the customer would
+    //      be short for the month. Re-issue an IDEMPOTENT plan refresh for every
+    //      active service, anchored at its next-due-date. After a correct renewal
+    //      billing_cycle_start == nextduedate, so the swarmz guard skips — this
+    //      is a no-op EXCEPT for a genuinely missed renewal, which it heals. We
+    //      anchor strictly at the due date (never today()) so a cycle can never
+    //      roll early. ──
+    _swarmz_cron_refreshActiveServices($services);
 }
 
 /**
@@ -191,6 +202,7 @@ function _swarmz_cron_gatherServices(): array
             ->get([
                 'h.id as serviceid',
                 'h.domainstatus as status',
+                'h.nextduedate as nextduedate',
                 'cfv.value as tenantid',
             ]);
 
@@ -285,6 +297,74 @@ function _swarmz_cron_suspendService(int $serviceId, string $reason): void
         ]);
     } catch (\Throwable $e) {
         _swarmz_hookLog('DailyCronJob.SuspendService.Failed', ['serviceid' => $serviceId], ['error' => $e->getMessage()]);
+    }
+}
+
+/**
+ * Renewal safety net (daily). Re-issue an idempotent plan refresh for every
+ * ACTIVE swarmz service, anchored at its next-due-date, to recover any renewal
+ * whose InvoicePaid hook never landed (API blip / cron skipped). The swarmz
+ * guard (billing_cycle_start >= cycle_anchor → skip) makes this a no-op for a
+ * service already rolled this cycle; only a missed renewal actually refreshes.
+ * We deliberately do NOT fall back to today() for the anchor (a blank due date
+ * is skipped) so a cycle can never roll early. Best-effort; never throws.
+ *
+ * @param array<int,\stdClass> $services gathered active/suspended services
+ *                                       (with serviceid, status, nextduedate,
+ *                                       tenantid).
+ */
+function _swarmz_cron_refreshActiveServices(array $services): void
+{
+    $apiKey = trim((string) Helpers::addonSetting('API Key', ''));
+    $baseUrl = trim((string) Helpers::addonSetting('API Base URL', ''));
+    $baseUrl = $baseUrl !== '' ? rtrim($baseUrl, '/') : Helpers::DEFAULT_API_BASE_URL;
+
+    foreach ($services as $s) {
+        if (strtolower((string) $s->status) !== 'active') {
+            continue; // only active (paid-through) services roll a cycle.
+        }
+        $serviceId = (int) $s->serviceid;
+        $tenant = (string) $s->tenantid;
+        if ($serviceId <= 0 || $tenant === '') {
+            continue;
+        }
+        // Anchor strictly at the next-due-date. Blank/zero → skip (never today()).
+        $due = trim((string) ($s->nextduedate ?? ''));
+        if ($due === '' || strpos($due, '0000-00-00') === 0) {
+            continue;
+        }
+        $anchor = substr($due, 0, 10);
+
+        // Per-service key (server Password) → fall back to the account key.
+        $key = $apiKey;
+        $perServiceKey = Helpers::resolveServiceServerKey($serviceId);
+        if ($perServiceKey !== '') {
+            $key = $perServiceKey;
+        }
+        if ($key === '') {
+            continue;
+        }
+
+        try {
+            $svcApi = new Api($key, $baseUrl);
+            $result = $svcApi->planRefresh($tenant, $anchor, true);
+            $body = $result['body'] ?? [];
+            $skipped = !empty($body['skipped'])
+                || (isset($body['result']) && is_array($body['result']) && !empty($body['result']['skipped']));
+            // A NON-skip means a renewal had been missed and we just healed it —
+            // log it so the host can see the recovery (skips are silent/normal).
+            if (!$skipped) {
+                _swarmz_hookLog(
+                    'DailyCronJob.RenewalRecovered',
+                    ['serviceid' => $serviceId, 'tenant_id' => $tenant, 'cycle_anchor' => $anchor],
+                    $body,
+                    $svcApi->maskedKey()
+                );
+            }
+        } catch (\Throwable $e) {
+            // Best-effort; a transient failure is retried on tomorrow's cron.
+            continue;
+        }
     }
 }
 

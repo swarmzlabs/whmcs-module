@@ -565,6 +565,11 @@ function _swarmz_emptyCreditPools(): array
         'topupCredits'     => 0,
         'topupUsed'        => null,
         'topupRemaining'   => null,
+        // 3-credit model lanes — shown as CREDITS (never USD).
+        'cloudGrant'          => 0,
+        'cloudGrantRemaining' => 0,
+        'aiGrant'             => 0,
+        'aiGrantRemaining'    => 0,
         'creditsSource'    => 'api',
     ];
 }
@@ -682,6 +687,22 @@ function _swarmz_creditPoolsFromBalances($balances, array $baseCredits): array
         $out['topupCredits']   = $purchased > 0 ? $purchased : $available;
         $out['topupUsed']      = $consumed;
         $out['topupRemaining'] = $available;
+    }
+
+    // ---- Cloud + AI credit lanes (3-credit model). Grant size from
+    //      caps.monthly_{cloud,ai}_credits; remaining from the per-workspace
+    //      grant pools. Shown as CREDITS to the WHU — never USD. ----
+    if (array_key_exists('monthly_cloud_credits', $caps) && $num($caps['monthly_cloud_credits']) !== null) {
+        $out['cloudGrant'] = $num($caps['monthly_cloud_credits']);
+    }
+    if ($ws !== null && isset($ws['cloud_grant_remaining'])) {
+        $out['cloudGrantRemaining'] = (float) $ws['cloud_grant_remaining'];
+    }
+    if (array_key_exists('monthly_ai_credits', $caps) && $num($caps['monthly_ai_credits']) !== null) {
+        $out['aiGrant'] = $num($caps['monthly_ai_credits']);
+    }
+    if ($ws !== null && isset($ws['ai_grant_remaining'])) {
+        $out['aiGrantRemaining'] = (float) $ws['ai_grant_remaining'];
     }
 
     return $out;
@@ -808,8 +829,6 @@ function swarmz_ClientArea(array $params)
             'ssoUrl'               => $ssoUrl,
             'usage'                => $usage,
             'creditsUsed'          => $usage['creditsUsed']   ?? 0,
-            'cloudUsd'             => $usage['cloudUsd']      ?? 0,
-            'usdCredits'           => $usage['usdCredits']    ?? 0,
             'projectsCount'        => $usage['projectsCount'], // may be null — template handles it
             // Plan limits (W6.6): null = unlimited (0-sentinel already applied).
             'domainsCount'         => $usage['domainsCount']   ?? null,
@@ -830,18 +849,18 @@ function swarmz_ClientArea(array $params)
             'monthlyRemaining'     => $usage['monthlyRemaining'] ?? null,
             'rolloverCredits'      => $usage['rolloverCredits']  ?? null,
             'rolloverMonths'       => $usage['rolloverMonths']   ?? 0,
-            // 3) Top-up — one-off / purchased credits.
-            'topupCredits'         => $usage['topupCredits']     ?? 0,
-            'topupUsed'            => $usage['topupUsed']         ?? null,
-            'topupRemaining'       => $usage['topupRemaining']   ?? null,
+            // 3) Cloud credits — per-cycle lane (falls back to monthly when spent).
+            'cloudGrant'           => $usage['cloudGrant']          ?? 0,
+            'cloudGrantRemaining'  => $usage['cloudGrantRemaining'] ?? 0,
+            // 4) AI credits — per-cycle lane (falls back to monthly when spent).
+            'aiGrant'              => $usage['aiGrant']             ?? 0,
+            'aiGrantRemaining'     => $usage['aiGrantRemaining']    ?? 0,
             // Where the credit numbers came from ('live' | 'api') — for sub-labels.
             'creditsSource'        => $usage['creditsSource']    ?? 'api',
             // Host-configurable presentation, set in the Reseller Console addon
             // module (falls back to sensible defaults when the addon is absent).
             'editorButtonLabel' => Helpers::editorButtonLabel(),
             'creditTerm'        => Helpers::creditTerm(),
-            'showAiSpend'       => Helpers::showAiSpend(),
-            'showCloudSpend'    => Helpers::showCloudSpend(),
             'supportUrl'        => Helpers::supportUrl(),
         ],
     ];
