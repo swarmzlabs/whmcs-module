@@ -77,18 +77,6 @@ function swarmz_config()
                 'Default'      => 'credits',
                 'Description'  => 'What to call credits in the client area (e.g. "AI actions", "tokens"). Purely cosmetic.',
             ],
-            'Show AI Spend To Client' => [
-                'FriendlyName' => 'Show AI Spend To Client',
-                'Type'         => 'yesno',
-                'Default'      => 'on',
-                'Description'  => 'Show the AI USD spend figure to the end customer in the client area.',
-            ],
-            'Show Cloud Spend To Client' => [
-                'FriendlyName' => 'Show Cloud Spend To Client',
-                'Type'         => 'yesno',
-                'Default'      => 'on',
-                'Description'  => 'Show the cloud USD spend figure to the end customer in the client area.',
-            ],
             'Support URL' => [
                 'FriendlyName' => 'Support URL',
                 'Type'         => 'text',

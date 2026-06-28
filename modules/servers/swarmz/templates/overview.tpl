@@ -5,10 +5,12 @@
  * their own brand. The SSO button label, the word used for "credits", and which
  * spend figures show are all host-configurable via the Reseller Console addon.
  *
- * Credits are THREE separate pools — never one merged number:
+ * Credits are shown as SEPARATE pools — never one merged number, never in USD
+ * (dollar figures would leak internal cost/profit to the host's customer):
  *   1. Free credits    — daily allowance (resets 00:00 UTC), optional monthly cap.
- *   2. Monthly credits — paid grant, resets on the billing cycle, may roll over.
- *   3. Top-up credits  — one-off / purchased.
+ *   2. Monthly credits — paid build grant, resets on the billing cycle, may roll over.
+ *   3. Cloud credits   — per-cycle cloud lane (falls back to monthly when spent).
+ *   4. AI credits      — per-cycle AI lane (falls back to monthly when spent).
  *
  * Values + plan caps come entirely from the platform-usage API response (live
  * per-pool balances + balances.by_workspace[].caps); the module no longer holds
@@ -29,15 +31,14 @@
  *   monthlyRemaining     int|float|null
  *   rolloverCredits      int|float|null — carried-over remaining (null = n/a)
  *   rolloverMonths       int        — configured carry-over months (0 = none)
- *   topupCredits         int|float  — top-up pool size (0 = none)
- *   topupUsed            int|float|null
- *   topupRemaining       int|float|null
+ *   cloudGrant           int|float  — monthly cloud-credit grant size (0 = none)
+ *   cloudGrantRemaining  int|float  — cloud credits remaining this cycle
+ *   aiGrant              int|float  — monthly AI-credit grant size (0 = none)
+ *   aiGrantRemaining     int|float  — AI credits remaining this cycle
  *   creditsSource        string     — 'live' | 'config'
  *
  *   --- Other usage ---
  *   creditsUsed          float
- *   cloudUsd             float
- *   usdCredits           float
  *   projectsCount        int|null
  *   domainsCount         int|null   — live count (often null; API doesn't return it)
  *   domainsLimit         int|null   — null = unlimited
@@ -48,8 +49,6 @@
  *   --- Host-configurable via the Reseller Console addon module ---
  *   editorButtonLabel  string  — SSO button text
  *   creditTerm         string  — what to call "credits"
- *   showAiSpend        bool    — show AI USD spend card
- *   showCloudSpend     bool    — show cloud USD spend card
  *   supportUrl         string  — optional host support link
  *}
 
@@ -71,12 +70,6 @@
     {assign var="monthlyRem" value=$monthlyRemaining}
 {else}
     {assign var="monthlyRem" value=$monthlyCredits}
-{/if}
-
-{if $topupRemaining !== null}
-    {assign var="topupRem" value=$topupRemaining}
-{else}
-    {assign var="topupRem" value=$topupCredits}
 {/if}
 
 <style>
@@ -142,7 +135,7 @@
                     <div class="swz-num">{$freeRemaining|string_format:"%d"}{if $freeDaily !== null}<small> / {$freeDaily|string_format:"%d"}</small>{/if}</div>
                     <div class="swz-sub">
                         {if $freeDaily !== null}{$freeDaily|string_format:"%d"}/day &middot; {/if}resets daily (00:00 UTC)
-                        {if $freeMonthlyCap !== null}<br><span class="swz-muted">Up to {$freeMonthlyCap|string_format:"%d"} {$ct|escape}/month</span>{/if}
+                        {if $freeMonthlyCap !== null && $freeMonthlyCap > 0}<br><span class="swz-muted">Up to {$freeMonthlyCap|string_format:"%d"} {$ct|escape}/month</span>{/if}
                     </div>
                 {/if}
             </div>
@@ -163,18 +156,27 @@
                 {/if}
             </div>
 
-            {* 3) Top-up credits — one-off / purchased. *}
+            {* 3) Cloud credits — separate lane (falls back to monthly when spent). *}
             <div class="swz-card">
-                <p class="swz-card-label">Top-up {$ct|escape}</p>
-                {if $topupCredits > 0 || ($topupRem !== null && $topupRem > 0)}
-                    <div class="swz-num">{$topupRem|string_format:"%d"}{if $topupCredits > 0}<small> / {$topupCredits|string_format:"%d"}</small>{/if}</div>
-                    <div class="swz-sub">
-                        One-off &middot; never expires
-                        {if $topupUsed !== null && $topupUsed > 0}<br><span class="swz-muted">{$topupUsed|string_format:"%d"} used</span>{/if}
-                    </div>
+                <p class="swz-card-label">Cloud {$ct|escape}</p>
+                {if $cloudGrant > 0}
+                    <div class="swz-num">{$cloudGrantRemaining|string_format:"%d"}<small> / {$cloudGrant|string_format:"%d"}</small></div>
+                    <div class="swz-sub">Renews each billing cycle</div>
                 {else}
-                    <div class="swz-num" style="opacity:.45;">0</div>
-                    <div class="swz-sub">No top-up {$ct|escape} purchased</div>
+                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
+                    <div class="swz-sub">Not included on this plan</div>
+                {/if}
+            </div>
+
+            {* 4) AI credits — separate lane (falls back to monthly when spent). *}
+            <div class="swz-card">
+                <p class="swz-card-label">AI {$ct|escape}</p>
+                {if $aiGrant > 0}
+                    <div class="swz-num">{$aiGrantRemaining|string_format:"%d"}<small> / {$aiGrant|string_format:"%d"}</small></div>
+                    <div class="swz-sub">Renews each billing cycle</div>
+                {else}
+                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
+                    <div class="swz-sub">Not included on this plan</div>
                 {/if}
             </div>
 
@@ -211,23 +213,9 @@
                 {/if}
             </div>
 
-            {* AI spend (optional, host-toggled). *}
-            {if $showAiSpend}
-            <div class="swz-card">
-                <p class="swz-card-label">AI spend</p>
-                <div class="swz-num">${$usdCredits|default:0|string_format:"%.2f"}</div>
-                <div class="swz-sub">This month</div>
-            </div>
-            {/if}
-
-            {* Cloud spend (optional, host-toggled). *}
-            {if $showCloudSpend}
-            <div class="swz-card">
-                <p class="swz-card-label">Cloud usage</p>
-                <div class="swz-num">${$cloudUsd|default:0|string_format:"%.2f"}</div>
-                <div class="swz-sub">This month</div>
-            </div>
-            {/if}
+            {* NOTE: USD spend cards were removed deliberately. The WHU must never
+               see dollar amounts (it leaks internal cost/profit) — all spend is
+               shown as CREDITS in the "Your credits" section above. *}
 
         </div>
 

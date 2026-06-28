@@ -309,18 +309,6 @@ class Helpers
         return $v !== '' ? $v : 'credits';
     }
 
-    /** Whether to show AI USD spend to the client (default: yes). */
-    public static function showAiSpend(): bool
-    {
-        return self::addonBool('Show AI Spend To Client', true);
-    }
-
-    /** Whether to show cloud USD spend to the client (default: yes). */
-    public static function showCloudSpend(): bool
-    {
-        return self::addonBool('Show Cloud Spend To Client', true);
-    }
-
     /** Optional host support URL shown in the client-area panel. */
     public static function supportUrl(): string
     {
