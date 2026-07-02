@@ -244,10 +244,18 @@ function swarmz_CreateAccount(array $params)
 
         // Provision by plan name: the platform resolves the full entitlement set
         // from plan_code server-side.
+        //
+        // cycle_anchor = the service's next-due-date (the FIRST renewal). The
+        // platform stores it as the workspace's billing-cycle anchor so the
+        // order invoice's own InvoicePaid hook (which fires a plan refresh
+        // anchored at this same date) is an idempotent skip instead of rolling
+        // + re-charging month 1. Server-side guards ignore a past/blank anchor
+        // and anything beyond ~45 days (non-monthly cycles keep legacy behavior).
         $body = [
             'external_ref' => $externalRef,
             'whu'          => $whu,
             'plan_code'    => $planCode,
+            'cycle_anchor' => Helpers::resolveCycleAnchor($params, $serviceId),
         ];
 
         $result = $api->postPlatform('platform-create', $body);
@@ -349,18 +357,18 @@ function swarmz_ChangePackage(array $params)
         $result = $api->postPlatform('platform-plan', $body);
         _swarmz_logModuleCall('ChangePackage', $body, $result['body'], $api->maskedKey());
 
-        // Roll the credit cycle at the billing boundary. A package change is a
-        // cycle event (new entitlements → reset monthly credits + apply
-        // rollover), so we ask swarmz to refresh the plan anchored to the
-        // service's next-due-date. Idempotent per (tenant, cycle_anchor) on the
-        // server, so a same-day retry is a no-op.
-        //
-        // Best-effort: a refresh failure must NOT fail the package change. We
-        // only have a meaningful workspace to refresh once a tenant_id exists;
-        // skip silently before provisioning.
-        if ($tenantId !== null) {
-            _swarmz_planRefresh($api, $tenantId, Helpers::resolveCycleAnchor($params, $serviceId), 'ChangePackage');
-        }
+        // NO plan-refresh here (v1.6.0). WHMCS runs ChangePackage when the
+        // PRORATED upgrade invoice is paid — mid-cycle, NOT at a billing
+        // boundary. The platform now prorates server-side inside the plan
+        // assignment itself: an upgrade grants (new − old) monthly credits ×
+        // time-remaining-in-cycle and meters the host for exactly that
+        // prorated amount; a downgrade applies the new caps immediately and
+        // takes full effect at renewal (no clawback, matching WHMCS's
+        // no-refund default). The old refresh call anchored at next-due-date
+        // rolled the WHOLE cycle instead — full new-plan grant + a FULL
+        // monthly charge to the host for a prorated end-customer payment.
+        // Renewal-boundary refreshes remain owned by the InvoicePaid hook +
+        // the daily safety net (hooks.php).
 
         return 'success';
     } catch (\Throwable $e) {
@@ -990,47 +998,9 @@ function _swarmz_simpleLifecycle(string $hookName, string $endpoint, array $para
     }
 }
 
-/**
- * Best-effort call to /platform-plan-refresh. Rolls the workspace's credit
- * cycle (reset monthly credits + apply rollover) anchored at $cycleAnchor.
- *
- * Deliberately swallows every failure: a refresh is an enhancement on top of
- * the entitlement push, and the endpoint may not yet be deployed on older
- * servers (it returns 404 there) — neither case should fail the caller.
- *
- * @param Api    $api
- * @param string $tenantId
- * @param string $cycleAnchor ISO date
- * @param string $context     Calling hook name, for the log line.
- */
-function _swarmz_planRefresh(Api $api, string $tenantId, string $cycleAnchor, string $context): void
-{
-    try {
-        $result = $api->planRefresh($tenantId, $cycleAnchor, true);
-        _swarmz_logModuleCall(
-            $context . '.PlanRefresh',
-            ['tenant_id' => $tenantId, 'cycle_anchor' => $cycleAnchor],
-            $result['body'],
-            $api->maskedKey()
-        );
-    } catch (SwarmzApiException $e) {
-        // 404 = endpoint not deployed yet (graceful no-op); anything else is a
-        // soft warning. Either way we don't propagate.
-        _swarmz_logModuleCall(
-            $context . '.PlanRefresh.Skipped',
-            ['tenant_id' => $tenantId, 'cycle_anchor' => $cycleAnchor],
-            ['note' => 'plan-refresh unavailable', 'status' => $e->getStatusCode(), 'error' => $e->getErrorCode()],
-            $api->maskedKey()
-        );
-    } catch (\Throwable $e) {
-        _swarmz_logModuleCall(
-            $context . '.PlanRefresh.Skipped',
-            ['tenant_id' => $tenantId, 'cycle_anchor' => $cycleAnchor],
-            ['error' => $e->getMessage()],
-            $api->maskedKey()
-        );
-    }
-}
+// _swarmz_planRefresh was removed in v1.6.0: renewal-boundary refreshes are
+// owned entirely by hooks.php (InvoicePaid + the daily safety net); the
+// mid-cycle ChangePackage path is prorated server-side inside platform-plan.
 
 /**
  * Run /platform-sso and return the WHMCS-shaped result array.
