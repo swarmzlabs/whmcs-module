@@ -167,12 +167,19 @@ class Console
     }
 
     /**
-     * One account-wide /platform-usage call. Returns a tenant_id => usage map
-     * plus account totals for the period, AND a tenant_id => plan-caps map drawn
-     * from the response's `balances.by_workspace[].caps` (the only source of plan
-     * limits now that the positional config options are gone).
+     * One account-wide /platform-usage call. Returns:
+     *   - map:    tenant_id => USD spend { credits, ai, cloud } (the host's
+     *             WHOLESALE cost — kept for the one "Wholesale cost" total).
+     *   - bal:    tenant_id => per-lane CREDITS standing { build/cloud/ai
+     *             used+total (+rollover/topup remaining on build) }, drawn from
+     *             `balances.by_workspace[]`. This is what the console now shows
+     *             per workspace (credits, not USD).
+     *   - caps:   tenant_id => plan-caps map (balances.by_workspace[].caps) —
+     *             the only source of plan limits + the per-lane grant TOTALS
+     *             (monthly_cloud_credits / monthly_ai_credits).
+     *   - totals: account-wide USD spend for the period.
      *
-     * @return array{map:array<string,array>,caps:array<string,array>,totals:array,period:array}
+     * @return array{map:array<string,array>,bal:array<string,array>,caps:array<string,array>,totals:array,period:array}
      */
     private function fetchUsage(string $period): array
     {
@@ -195,19 +202,26 @@ class Console
             ];
         }
 
-        // Per-workspace plan caps from the balances section. Keyed by
-        // workspace_id (= the tenant_id stored on each WHMCS service).
+        // Per-workspace plan caps + per-lane CREDIT standing from the balances
+        // section. Both keyed by workspace_id (= the tenant_id on each service).
         $caps = [];
+        $bal = [];
         $byWsBal = isset($balances['by_workspace']) && is_array($balances['by_workspace']) ? $balances['by_workspace'] : [];
         foreach ($byWsBal as $w) {
-            if (empty($w['workspace_id']) || !isset($w['caps']) || !is_array($w['caps'])) {
+            if (empty($w['workspace_id'])) {
                 continue;
             }
-            $caps[(string) $w['workspace_id']] = $w['caps'];
+            $tid = (string) $w['workspace_id'];
+            $wCaps = (isset($w['caps']) && is_array($w['caps'])) ? $w['caps'] : [];
+            if (!empty($wCaps)) {
+                $caps[$tid] = $wCaps;
+            }
+            $bal[$tid] = self::laneCreditsFromWorkspace($w, $wCaps);
         }
 
         return [
             'map'    => $map,
+            'bal'    => $bal,
             'caps'   => $caps,
             'totals' => [
                 'credits' => (float) ($usage['credits_used'] ?? 0),
@@ -215,6 +229,75 @@ class Console
                 'cloud'   => (float) ($usage['cloud_usd'] ?? 0),
             ],
             'period' => (isset($usage['period']) && is_array($usage['period'])) ? $usage['period'] : [],
+        ];
+    }
+
+    /**
+     * Distil one balances.by_workspace[] row into the per-lane CREDITS view the
+     * console shows (used / total per lane, in credits — never USD). Mirrors the
+     * server module's client-area credit mapping so the host and their customer
+     * read the same numbers.
+     *
+     *   build : included_used / included_credits, plus rollover + top-up
+     *           REMAINING (the extra credits available beyond the monthly grant).
+     *   cloud : (monthly_cloud_credits − cloud_grant_remaining) / monthly_cloud_credits.
+     *   ai    : (monthly_ai_credits    − ai_grant_remaining)    / monthly_ai_credits.
+     *
+     * A missing total is returned as null (→ "—"); a missing "used" as 0.
+     *
+     * @param array $w    One balances.by_workspace[] row.
+     * @param array $caps That row's caps (grant totals live here for cloud/ai).
+     * @return array{
+     *   buildUsed:float, buildTotal:?float, rolloverRemaining:float, topupRemaining:float,
+     *   cloudUsed:float, cloudTotal:?float, aiUsed:float, aiTotal:?float
+     * }
+     */
+    private static function laneCreditsFromWorkspace(array $w, array $caps): array
+    {
+        $num = static function ($v): ?float {
+            return is_numeric($v) ? (float) $v : null;
+        };
+
+        // ---- Build (monthly included) lane ----
+        $buildTotal = $num($w['included_credits'] ?? null);
+        $buildUsed  = (float) ($num($w['included_used'] ?? null) ?? 0.0);
+
+        // Rollover remaining (carried-over credits still available).
+        $rollRemaining = $num($w['rollover_remaining'] ?? null) ?? 0.0;
+
+        // Top-up remaining (one-off purchased credits still available).
+        $topupRemaining = $num($w['topup_available'] ?? null);
+        if ($topupRemaining === null) {
+            $purchased = $num($w['purchased_total'] ?? null);
+            $consumed  = $num($w['purchased_consumed'] ?? null);
+            $topupRemaining = ($purchased !== null)
+                ? max(0.0, $purchased - ($consumed ?? 0.0))
+                : 0.0;
+        }
+
+        // ---- Cloud lane: total from caps, used = total − remaining ----
+        $cloudTotal = $num($caps['monthly_cloud_credits'] ?? null);
+        $cloudRemaining = $num($w['cloud_grant_remaining'] ?? null);
+        $cloudUsed = ($cloudTotal !== null && $cloudRemaining !== null)
+            ? max(0.0, $cloudTotal - $cloudRemaining)
+            : 0.0;
+
+        // ---- AI lane: total from caps, used = total − remaining ----
+        $aiTotal = $num($caps['monthly_ai_credits'] ?? null);
+        $aiRemaining = $num($w['ai_grant_remaining'] ?? null);
+        $aiUsed = ($aiTotal !== null && $aiRemaining !== null)
+            ? max(0.0, $aiTotal - $aiRemaining)
+            : 0.0;
+
+        return [
+            'buildUsed'         => $buildUsed,
+            'buildTotal'        => $buildTotal,
+            'rolloverRemaining' => $rollRemaining,
+            'topupRemaining'    => (float) $topupRemaining,
+            'cloudUsed'         => $cloudUsed,
+            'cloudTotal'        => $cloudTotal,
+            'aiUsed'            => $aiUsed,
+            'aiTotal'           => $aiTotal,
         ];
     }
 
@@ -424,23 +507,72 @@ class Console
             }
         }
         $t = $usage['totals'];
+        // The one money figure: the host's real WHOLESALE cost (AI + cloud $).
         $wholesale = $t['ai'] + $t['cloud'];
-        $periodLabel = $this->periodLabel($usage['period'], $period);
+
+        // Per-lane CREDITS, summed across every workspace that has a live
+        // balance. Shown as used / granted per lane — never USD.
+        $sum = $this->sumLaneCredits($usage);
 
         $cards = [
-            ['Active workspaces', (string) $active, '#2563eb'],
-            ['Credits used (' . $periodLabel . ')', number_format($t['credits']), '#7c3aed'],
-            ['AI spend', $this->money($t['ai']), '#0891b2'],
-            ['Cloud spend', $this->money($t['cloud']), '#ca8a04'],
-            ['Wholesale total', $this->money($wholesale), '#16a34a'],
+            ['Active workspaces', (string) $active, '#2563eb', false],
+            ['Build credits', $this->summaryLane($sum['buildUsed'], $sum['buildTotal']), '#7c3aed', true],
+            ['Cloud credits', $this->summaryLane($sum['cloudUsed'], $sum['cloudTotal']), '#0891b2', true],
+            ['AI credits', $this->summaryLane($sum['aiUsed'], $sum['aiTotal']), '#ca8a04', true],
+            ['Wholesale cost', $this->money($wholesale), '#16a34a', false],
         ];
         $html = '<div class="swz-cards">';
         foreach ($cards as $c) {
-            $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $this->esc($c[1]) . '</div>'
+            // Lane cards carry inline markup (the muted "/ total"); others are escaped.
+            $value = $c[3] ? $c[1] : $this->esc($c[1]);
+            $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $value . '</div>'
                 . '<div class="swz-card-l">' . $this->esc($c[0]) . '</div></div>';
         }
         $html .= '</div>';
         return $html;
+    }
+
+    /**
+     * Sum per-lane credit used/granted across all workspaces that reported a
+     * live balance in the platform-usage response. Grants only count when > 0
+     * (a lane absent from a plan contributes nothing to the denominator).
+     *
+     * @param array{bal?:array<string,array>} $usage
+     * @return array{buildUsed:float,buildTotal:float,cloudUsed:float,cloudTotal:float,aiUsed:float,aiTotal:float}
+     */
+    private function sumLaneCredits(array $usage): array
+    {
+        $out = [
+            'buildUsed' => 0.0, 'buildTotal' => 0.0,
+            'cloudUsed' => 0.0, 'cloudTotal' => 0.0,
+            'aiUsed'    => 0.0, 'aiTotal'    => 0.0,
+        ];
+        $bal = (isset($usage['bal']) && is_array($usage['bal'])) ? $usage['bal'] : [];
+        foreach ($bal as $lanes) {
+            if (!is_array($lanes)) {
+                continue;
+            }
+            foreach (['build', 'cloud', 'ai'] as $lane) {
+                $total = $lanes[$lane . 'Total'] ?? null;
+                if (is_numeric($total) && (float) $total > 0) {
+                    $out[$lane . 'Total'] += (float) $total;
+                    $out[$lane . 'Used'] += (float) ($lanes[$lane . 'Used'] ?? 0);
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Format a summary lane card value as "used / granted" credits, or an
+     * em-dash when no plan in the account grants that lane.
+     */
+    private function summaryLane(float $used, float $total): string
+    {
+        if ($total <= 0) {
+            return '&mdash;';
+        }
+        return number_format($used) . ' <span style="color:#9ca3af;font-size:15px;">/ ' . number_format($total) . '</span>';
     }
 
     /**
@@ -629,11 +761,14 @@ class Console
         }
 
         $map = $usage['map'];
+        $bal = (isset($usage['bal']) && is_array($usage['bal'])) ? $usage['bal'] : [];
         $rows = '';
         foreach ($services as $s) {
             $tenant = (string) $s->tenantid;
             $u = isset($map[$tenant]) ? $map[$tenant] : ['credits' => 0, 'ai' => 0, 'cloud' => 0];
-            $total = $u['ai'] + $u['cloud'];
+            // Wholesale = the host's real cost (AI $ + Cloud $ from platform-usage).
+            $wholesale = $u['ai'] + $u['cloud'];
+            $lanes = isset($bal[$tenant]) && is_array($bal[$tenant]) ? $bal[$tenant] : null;
 
             $name = trim((string) $s->firstname . ' ' . (string) $s->lastname);
             if ($name === '') {
@@ -653,10 +788,10 @@ class Console
                 . '<td>' . $this->esc((string) ($s->productname ?: '—')) . '</td>'
                 . '<td>' . $this->statusBadge((string) $s->status) . '</td>'
                 . '<td><code title="' . $this->esc($tenant) . '">' . $this->esc($tenantShort) . '</code></td>'
-                . '<td class="swz-num">' . number_format($u['credits']) . '</td>'
-                . '<td class="swz-num">' . $this->money($u['ai']) . '</td>'
-                . '<td class="swz-num">' . $this->money($u['cloud']) . '</td>'
-                . '<td class="swz-num swz-strong">' . $this->money($total) . '</td>'
+                . '<td class="swz-num">' . $this->buildLaneCell($lanes) . '</td>'
+                . '<td class="swz-num">' . $this->laneCell($lanes, 'cloud') . '</td>'
+                . '<td class="swz-num">' . $this->laneCell($lanes, 'ai') . '</td>'
+                . '<td class="swz-num swz-strong">' . $this->money($wholesale) . '</td>'
                 . '<td><a class="swz-btn swz-btn-sm" href="' . $this->esc($serviceUrl) . '">Manage</a></td>'
                 . '</tr>';
         }
@@ -664,11 +799,76 @@ class Console
         return '<div class="swz-tablewrap"><table class="swz-table">'
             . '<thead><tr>'
             . '<th>Customer</th><th>Plan</th><th>Status</th><th>Tenant</th>'
-            . '<th class="swz-num">Credits</th><th class="swz-num">AI $</th>'
-            . '<th class="swz-num">Cloud $</th><th class="swz-num">Wholesale $</th><th></th>'
+            . '<th class="swz-num">Build credits</th><th class="swz-num">Cloud credits</th>'
+            . '<th class="swz-num">AI credits</th><th class="swz-num">Wholesale cost</th><th></th>'
             . '</tr></thead><tbody>' . $rows . '</tbody></table></div>'
             . '<p class="swz-muted" style="margin-top:10px;">Tenant = Swarmz workspace id stored on the service. '
-            . 'Credits/spend are for the selected period. A row showing zeros simply had no usage in that period.</p>';
+            . 'Credit lanes show <strong>used / grant</strong> this cycle (build includes any rollover + top-up '
+            . 'still available). <strong>Wholesale cost</strong> is your AI + cloud cost from Swarmz for the '
+            . 'selected period &mdash; set your retail price in WHMCS product pricing. A row of dashes simply had '
+            . 'no live balance for that lane.</p>';
+    }
+
+    /**
+     * Render the Build-lane cell: "used / grant" credits, with a muted sub-line
+     * for rollover + top-up remaining when either is present. Falls back to "—"
+     * when there is no live balance for this workspace.
+     *
+     * @param array<string,mixed>|null $lanes
+     */
+    private function buildLaneCell(?array $lanes): string
+    {
+        if ($lanes === null) {
+            return '—';
+        }
+        $main = $this->laneUsedTotal((float) ($lanes['buildUsed'] ?? 0), $lanes['buildTotal'] ?? null);
+
+        $extra = [];
+        $roll = (float) ($lanes['rolloverRemaining'] ?? 0);
+        if ($roll > 0) {
+            $extra[] = '+' . number_format($roll) . ' rollover';
+        }
+        $topup = (float) ($lanes['topupRemaining'] ?? 0);
+        if ($topup > 0) {
+            $extra[] = '+' . number_format($topup) . ' top-up';
+        }
+        if (!empty($extra)) {
+            $main .= '<div class="swz-muted">' . $this->esc(implode(' · ', $extra)) . ' left</div>';
+        }
+        return $main;
+    }
+
+    /**
+     * Render a Cloud/AI lane cell as "used / grant" credits, or "—" when the
+     * lane isn't granted on this plan (or there's no live balance).
+     *
+     * @param array<string,mixed>|null $lanes
+     * @param string $lane 'cloud' | 'ai'
+     */
+    private function laneCell(?array $lanes, string $lane): string
+    {
+        if ($lanes === null) {
+            return '—';
+        }
+        return $this->laneUsedTotal(
+            (float) ($lanes[$lane . 'Used'] ?? 0),
+            $lanes[$lane . 'Total'] ?? null
+        );
+    }
+
+    /**
+     * Format a "used / total" credits pair. A null/≤0 total renders "—" (the
+     * lane isn't part of the plan), so we never imply a 0-credit grant exists.
+     *
+     * @param float      $used
+     * @param float|null $total
+     */
+    private function laneUsedTotal(float $used, $total): string
+    {
+        if ($total === null || (float) $total <= 0) {
+            return '—';
+        }
+        return number_format($used) . ' <span class="swz-muted">/ ' . number_format((float) $total) . '</span>';
     }
 
     // ------------------------------------------------------------- helpers

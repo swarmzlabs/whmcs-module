@@ -255,8 +255,16 @@ function swarmz_CreateAccount(array $params)
             'external_ref' => $externalRef,
             'whu'          => $whu,
             'plan_code'    => $planCode,
-            'cycle_anchor' => Helpers::resolveCycleAnchor($params, $serviceId),
         ];
+
+        // Only send cycle_anchor when there is a REAL future due date.
+        // resolveCycleAnchor returns '' when there is none (it never falls back
+        // to today()); omitting the field entirely is cleaner than sending a
+        // value the platform would just discard, and matches the daily cron.
+        $cycleAnchor = Helpers::resolveCycleAnchor($params, $serviceId);
+        if ($cycleAnchor !== '') {
+            $body['cycle_anchor'] = $cycleAnchor;
+        }
 
         $result = $api->postPlatform('platform-create', $body);
 
@@ -391,6 +399,65 @@ function swarmz_ChangePackage(array $params)
 function swarmz_ServiceSingleSignOn(array $params)
 {
     return _swarmz_doSso($params);
+}
+
+/**
+ * Custom client-area functions the client may invoke. `launch` is our SSO
+ * launcher (swarmz_launch); it re-mints a fresh platform-sso redirect on EVERY
+ * click and 302s straight to the editor.
+ *
+ * We register it in ClientAreaAllowedFunctions — NOT ClientAreaCustomButtonArray
+ * — deliberately: this authorises the `modop=custom&a=launch` request WITHOUT
+ * WHMCS auto-rendering a second (same-tab) default button. Our client-area
+ * template renders the one host-branded launcher itself, and it opens in a new
+ * tab.
+ *
+ * Why a custom action at all, instead of WHMCS's built-in `dosinglesignon` link
+ * (which swarmz_ServiceSingleSignOn also backs): the built-in flow is
+ * repeat-suppressed — after the first launch, a second same-tab click on a
+ * bfcache-restored product page frequently produces NO navigation (WHMCS treats
+ * the SSO as already-satisfied in that session, and the customer's app now lives
+ * on a different apex than WHMCS via a custom domain). The custom action always
+ * runs server-side and re-mints; combined with the new-tab button, repeat clicks
+ * reliably land in the editor.
+ *
+ * @return array<int,string>
+ */
+function swarmz_ClientAreaAllowedFunctions()
+{
+    return ['launch'];
+}
+
+/**
+ * SSO launcher (custom client-area action, invoked via
+ * clientarea.php?action=productdetails&id=<sid>&modop=custom&a=launch).
+ *
+ * Mints a fresh platform-sso redirect and sends the browser there with a
+ * Location header, then exits — so every click is a new round-trip that
+ * cannot be repeat-suppressed. The client-area button targets _blank, so the
+ * WHMCS product page stays put and the editor opens in a new tab.
+ *
+ * On failure we do NOT redirect; we return the error string so WHMCS surfaces
+ * it through its normal module-error path (and AfterModuleCustomFailed fires).
+ *
+ * @param array $params
+ * @return string Empty string is never returned on success (we exit); a
+ *                non-empty error string on failure.
+ */
+function swarmz_launch(array $params)
+{
+    $result = _swarmz_doSso($params);
+
+    if (!empty($result['success']) && !empty($result['redirectTo'])) {
+        _swarmz_redirect((string) $result['redirectTo']);
+        // _swarmz_redirect exits; the line below is unreachable in WHMCS and
+        // only there for the CLI/test harness where headers are a no-op.
+        return '';
+    }
+
+    return isset($result['errorMsg']) && $result['errorMsg'] !== ''
+        ? (string) $result['errorMsg']
+        : 'Swarmz: could not start the editor session. Please try again.';
 }
 
 // =========================================================================
@@ -824,7 +891,13 @@ function swarmz_ClientArea(array $params)
     $tenantId = Helpers::getTenantId($serviceId);
     $dashboardUrl = Helpers::getDashboardUrl($serviceId);
 
-    $ssoUrl = 'clientarea.php?action=productdetails&id=' . $serviceId . '&dosinglesignon=1';
+    // Point the SSO button at our custom launcher action (swarmz_launch), NOT
+    // the built-in &dosinglesignon=1 flow. The launcher re-mints on every click
+    // and the template opens it in a new tab, so repeat launches never no-op
+    // (the built-in flow is repeat-suppressed on bfcache-restored pages). The
+    // template submits this as a POST form (modop=custom requires POST) with
+    // target="_blank".
+    $ssoUrl = 'clientarea.php?action=productdetails&id=' . $serviceId . '&modop=custom&a=launch';
 
     // Pull usage (best-effort; on failure, render placeholders).
     $usage = swarmz_UsageUpdate($params);
@@ -833,6 +906,7 @@ function swarmz_ClientArea(array $params)
         'templatefile' => 'overview',
         'vars' => [
             'tenantId'             => $tenantId,
+            'serviceId'            => $serviceId,
             'dashboardUrl'         => $dashboardUrl,
             'ssoUrl'               => $ssoUrl,
             'usage'                => $usage,
@@ -985,11 +1059,10 @@ function _swarmz_simpleLifecycle(string $hookName, string $endpoint, array $para
 
         return 'success';
     } catch (SwarmzApiException $e) {
-        // 404 tenant_not_found on terminate is benign — the account is already gone.
-        if ($hookName === 'TerminateAccount' && $e->getStatusCode() === 404) {
-            _swarmz_logModuleCall($hookName . '.AlreadyGone', ['tenant_id' => $tenantId], ['note' => '404 from API — treating as no-op'], $api->maskedKey());
-            return 'success';
-        }
+        // NOTE: platform-terminate is idempotent — it returns 200 { already: true }
+        // for a missing/already-gone tenant, never 404. (An earlier 404-is-benign
+        // guard here was dead code and was removed in v1.7.0.) A 410 on
+        // suspend/unsuspend (terminated workspace) still surfaces as a normal error.
         _swarmz_logModuleCall($hookName . '.Error', $params, ['error' => $e->getMessage(), 'status' => $e->getStatusCode()], $api->maskedKey());
         return Helpers::formatError($e, $api->maskedKey());
     } catch (\Throwable $e) {
@@ -1001,6 +1074,36 @@ function _swarmz_simpleLifecycle(string $hookName, string $endpoint, array $para
 // _swarmz_planRefresh was removed in v1.6.0: renewal-boundary refreshes are
 // owned entirely by hooks.php (InvoicePaid + the daily safety net); the
 // mid-cycle ChangePackage path is prorated server-side inside platform-plan.
+
+/**
+ * Send the browser to $url with a 302 and stop. Used by the swarmz_launch
+ * custom action so each launch is a fresh, un-suppressed navigation.
+ *
+ * Only http(s) URLs are honoured (platform-sso always returns an absolute
+ * https URL); anything else is refused rather than emitted as a header.
+ * Outside a live WHMCS request (CLI/test harness) headers/exit are skipped so
+ * the caller can assert on the return value instead.
+ *
+ * @param string $url
+ */
+function _swarmz_redirect(string $url): void
+{
+    $url = trim($url);
+    if ($url === '' || !preg_match('#^https?://#i', $url)) {
+        return;
+    }
+
+    // In the CLI/test harness there is no WHMCS request to redirect; leave the
+    // navigation to the caller's return value.
+    if (!defined('WHMCS') || php_sapi_name() === 'cli') {
+        return;
+    }
+
+    if (!headers_sent()) {
+        header('Location: ' . $url, true, 302);
+    }
+    exit;
+}
 
 /**
  * Run /platform-sso and return the WHMCS-shaped result array.

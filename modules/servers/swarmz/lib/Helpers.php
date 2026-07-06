@@ -54,22 +54,27 @@ class Helpers
     }
 
     /**
-     * Resolve the billing-cycle anchor (ISO date, "YYYY-MM-DD") to pass to
-     * /platform-plan-refresh.
+     * Resolve the billing-cycle anchor (ISO date, "YYYY-MM-DD") to pass as
+     * `cycle_anchor` on CreateAccount / plan-refresh.
      *
-     * The anchor marks the start of the new credit cycle. The most faithful
-     * value is the service's next-due-date (the date the just-paid/renewed
+     * The anchor marks the start of the new credit cycle. The only faithful
+     * value is the service's real next-due-date (the date the just-paid/renewed
      * cycle runs to). Precedence:
      *   1. $params['nextduedate'] when WHMCS includes it in the module bag.
      *   2. tblhosting.nextduedate for the service.
-     *   3. today (UTC) as a safe fallback so a refresh still fires.
+     *   3. '' — NO anchor. We deliberately do NOT fall back to today(): a
+     *      "today" anchor would either roll the cycle early or be silently
+     *      discarded server-side (platform-create only accepts a future date
+     *      ≤45d). Returning '' lets the caller omit `cycle_anchor` entirely,
+     *      matching the daily cron's stricter "blank due date → skip, never
+     *      today()" behaviour (hooks.php).
      *
      * WHMCS stores dates as "YYYY-MM-DD"; a "0000-00-00" sentinel (free / one-
      * time products) is treated as absent.
      *
      * @param array $params
      * @param int   $serviceId
-     * @return string ISO date, e.g. "2026-06-01"
+     * @return string ISO date "YYYY-MM-DD", or '' when there is no real due date.
      */
     public static function resolveCycleAnchor(array $params, int $serviceId): string
     {
@@ -95,7 +100,8 @@ class Helpers
             return substr($candidate, 0, 10);
         }
 
-        return gmdate('Y-m-d');
+        // No real due date → no anchor. The caller omits cycle_anchor entirely.
+        return '';
     }
 
     /**

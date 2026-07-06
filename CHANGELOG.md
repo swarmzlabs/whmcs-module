@@ -5,6 +5,93 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-07-06
+
+Reliability + display pass: a re-minting SSO launcher, a credits-native admin
+Reseller Console, and cycle-anchor / dead-code hardening.
+
+### Changed
+- **Client-area SSO is now a re-minting custom action.** The "Open AI Editor"
+  button no longer uses WHMCS's built-in `&dosinglesignon=1` link (which is
+  repeat-suppressed — a second same-tab click on a bfcache-restored product
+  page frequently did nothing, made worse by the customer's editor living on a
+  different apex than WHMCS via a custom domain). It now POSTs to a module
+  custom action (`swarmz_launch`, authorised via `ClientAreaAllowedFunctions`)
+  that calls `platform-sso` **fresh on every click** and 302-redirects to the
+  returned URL. The button also opens in a **new tab** (`target="_blank"
+  rel="noopener"`), so repeat launches reliably land in the editor. The admin "Login as User" button was already `_blank` and
+  is unchanged.
+- **Admin Reseller Console is now credits-native per workspace.** The
+  per-customer table's "AI $" and "Cloud $" columns are replaced by **Build /
+  Cloud / AI credit** columns showing `used / grant` this cycle (build includes
+  any rollover + top-up still available), sourced from the per-workspace
+  `balances.by_workspace[]` the `platform-usage` API already returns. The
+  summary cards likewise switch from AI/Cloud spend to per-lane credit cards.
+  **One money figure remains — "Wholesale cost"** (AI + cloud $, the host's real
+  cost from Swarmz) — as a single table column and summary card, now explicitly
+  labelled as wholesale. The "Billing summary" panel (host wholesale cost /
+  upcoming invoice) is unchanged.
+- `Helpers::resolveCycleAnchor()` **returns `''` instead of today()** when a
+  service has no real future due date, and `CreateAccount` now **omits
+  `cycle_anchor` entirely** when it is empty (rather than sending a value the
+  platform would discard). This aligns CreateAccount with the daily cron's
+  stricter "blank due date → skip, never today()" behaviour and removes any risk
+  of a "today" anchor rolling a cycle early.
+
+### Removed
+- Dead code in `_swarmz_simpleLifecycle`: the `TerminateAccount` "404 is benign"
+  branch. `platform-terminate` is idempotent and returns `200 { already: true }`
+  for a missing/already-gone tenant — it never returns 404 — so the branch could
+  never fire.
+
+### Fixed
+- `overview.tpl` header comment corrected: `creditsSource` is `'live' | 'api'`
+  (it was documented as `'live' | 'config'`).
+
+### Versions
+- `lib/Api.php`: `Api::VERSION` bumped `1.6.0` → `1.7.0` (sent in `User-Agent`).
+- Reseller Console addon `version` bumped `1.5.0` → **`1.7.0`** (it had lagged at
+  1.5.0 through the 1.6.0 release).
+
+### Note
+- **Terminated-workspace reconcile** (`hooks.php` daily status reconcile, which
+  suspends a WHMCS service when Swarmz reports the workspace terminated) keys off
+  a **410** from `platform-usage`. The deployed `platform-usage` currently
+  returns 200 for a terminated tenant, so this reconcile is inert until the
+  server side ships 410-for-terminated support. No module change is required when
+  it does — the reconcile lights up automatically.
+- The customer-visible "plan/credits didn't change after upgrade" report is a
+  **server-side** matter (the plan-assignment RPC leaves the legacy
+  `workspace_billing.plan_tier`/`plan_id` columns stale, plus 30-day client
+  brand/credit snapshot cookies) — **not** a module bug. It is fixed in the
+  Swarmz platform, not here.
+
+## [1.6.0] - 2026-07-03
+
+Prorated plan changes. `ChangePackage` no longer rolls the whole billing cycle.
+
+### Changed
+- **`ChangePackage` no longer fires a `platform-plan-refresh`.** WHMCS runs
+  `ChangePackage` when the **prorated upgrade invoice** is paid — mid-cycle, not
+  at a billing boundary. The platform now prorates the change server-side inside
+  the plan assignment itself: an upgrade grants `(new − old)` monthly credits ×
+  the fraction of the cycle remaining and meters the host for exactly that
+  prorated amount; a downgrade applies the new caps immediately and takes full
+  effect at renewal (no clawback, matching WHMCS's no-refund default). The old
+  behaviour anchored a refresh at the next-due-date, which rolled the **entire**
+  cycle — a full new-plan grant plus a **full monthly host charge** for what was
+  only a prorated end-customer payment.
+- `CreateAccount` / `ChangePackage` send only `plan_code` (+ `external_ref`, and
+  `whu` on create). Renewal-boundary refreshes remain owned entirely by
+  `hooks.php` (the `InvoicePaid` hook + the daily safety net).
+
+### Removed
+- `_swarmz_planRefresh()` from the server module — the mid-cycle refresh call it
+  wrapped is gone (renewals are handled by the hooks, proration by the platform).
+
+### Versions
+- `lib/Api.php`: `Api::VERSION` bumped `1.5.0` → `1.6.0`.
+
 ## [1.5.0] - 2026-06-20
 
 Plan-by-name only. The legacy positional entitlement config options are removed

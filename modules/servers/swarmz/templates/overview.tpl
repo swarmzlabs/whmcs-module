@@ -35,7 +35,7 @@
  *   cloudGrantRemaining  int|float  — cloud credits remaining this cycle
  *   aiGrant              int|float  — monthly AI-credit grant size (0 = none)
  *   aiGrantRemaining     int|float  — AI credits remaining this cycle
- *   creditsSource        string     — 'live' | 'config'
+ *   creditsSource        string     — 'live' | 'api'
  *
  *   --- Other usage ---
  *   creditsUsed          float
@@ -110,7 +110,18 @@
         <h3>Your workspace</h3>
         {if $tenantId}
             <div class="swz-actions">
-                <a href="{$ssoUrl|escape}" class="btn btn-primary btn-lg">{$editorButtonLabel|default:'Open AI Editor'|escape} &rarr;</a>
+                {* SSO launcher: POST to our custom action (swarmz_launch), which
+                   re-mints a fresh sign-on redirect on every click. Opens in a
+                   NEW TAB so repeat launches aren't suppressed by bfcache /
+                   WHMCS's built-in dosinglesignon idempotency (the customer's
+                   editor lives on a different apex than WHMCS). modop=custom is
+                   a POST action, so this is a form, not a link. *}
+                <form action="clientarea.php?action=productdetails" method="post" target="_blank" rel="noopener" style="display:inline;">
+                    <input type="hidden" name="id" value="{$serviceId}" />
+                    <input type="hidden" name="modop" value="custom" />
+                    <input type="hidden" name="a" value="launch" />
+                    <button type="submit" class="btn btn-primary btn-lg">{$editorButtonLabel|default:'Open AI Editor'|escape} &rarr;</button>
+                </form>
             </div>
         {/if}
     </div>
