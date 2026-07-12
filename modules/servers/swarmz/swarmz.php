@@ -632,6 +632,17 @@ function _swarmz_emptyCreditPools(): array
         'freeDaily'        => null,   // null = unknown/unlimited until API says
         'freeDailyUsed'    => null,
         'freeMonthlyCap'   => null,
+        // Free-lane grant cadence + live counters (v1.8.0, API 2026-07). null
+        // mode = unknown (older API, or plan assigned before modes existed)
+        // → the daily-allowance rendering is the legacy default.
+        'freeMode'         => null,   // 'daily' | 'monthly' | 'one_time' | 'none'
+        'freeTotal'        => null,   // mode-resolved pool size (null = unlimited/unknown)
+        'freeUsed'         => null,   // mode-resolved used (today / this cycle / ever)
+        'freeRemaining'    => null,   // spendable now per the platform's spend fn
+        // Cloud/AI grant cadence ('monthly' | 'one_time' | 'none'; null = unknown
+        // → legacy per-cycle wording).
+        'cloudMode'        => null,
+        'aiMode'           => null,
         'monthlyCredits'   => 0,
         'monthlyUsed'      => null,
         'monthlyRemaining' => null,
@@ -735,6 +746,54 @@ function _swarmz_creditPoolsFromBalances($balances, array $baseCredits): array
         $out['freeMonthlyCap'] = $num($caps['monthly_credit_cap']);
     }
 
+    // ---- Lane grant cadence (caps.*_credit_mode) + live free-lane counters.
+    // A plan grants free credits in ONE of three modes: 'daily' (n/day, resets
+    // 00:00 UTC, optional monthly cap), 'monthly' (n once per billing month,
+    // replenished each cycle) or 'one_time' (n once EVER, never replenished) —
+    // plus 'none'. caps.credits_per_day is 0 for the non-daily modes, so the
+    // legacy daily-only rendering showed "0 / 0" while the customer actually
+    // held a one-time/monthly grant. The live free_* counters are the
+    // authoritative lane state (what the platform's spend function enforces):
+    // for one_time/monthly the monthly pair IS the grant + its usage.
+    // Older API deployments return none of these keys → modes stay null and
+    // the template keeps the legacy daily rendering.
+    $str = static function ($v) {
+        return (is_string($v) && $v !== '') ? $v : null;
+    };
+    $out['freeMode']  = $str($caps['free_credit_mode'] ?? null);
+    $out['cloudMode'] = $str($caps['cloud_credit_mode'] ?? null);
+    $out['aiMode']    = $str($caps['ai_credit_mode'] ?? null);
+
+    if ($ws !== null && array_key_exists('free_remaining', $ws)) {
+        $fDailyLimit   = $num($ws['free_daily_limit'] ?? null);
+        $fDailyUsed    = $num($ws['free_daily_used'] ?? null);
+        $fMonthlyLimit = $num($ws['free_monthly_limit'] ?? null);
+        $fMonthlyUsed  = $num($ws['free_monthly_used'] ?? null);
+
+        $out['freeRemaining'] = $num($ws['free_remaining'] ?? null); // null = unlimited
+        switch ($out['freeMode']) {
+            case 'one_time':
+            case 'monthly':
+                $out['freeTotal'] = $fMonthlyLimit;
+                $out['freeUsed']  = $fMonthlyUsed;
+                break;
+            case 'none':
+                $out['freeTotal'] = 0.0;
+                break;
+            default:
+                // 'daily' or unknown/legacy: headline = today's allowance.
+                // Prefer the live per-day ceiling over caps.credits_per_day —
+                // the billing row is what the spend function enforces.
+                $out['freeTotal'] = $fDailyLimit;
+                $out['freeUsed']  = $fDailyUsed;
+                if ($fDailyLimit !== null) {
+                    $out['freeDaily'] = $fDailyLimit;
+                }
+                $out['freeDailyUsed'] = $fDailyUsed;
+                break;
+        }
+    }
+
     // ---- Monthly pool: included grant (size / used / remaining) + rollover ----
     if ($ws !== null && isset($ws['included_credits'])) {
         $included   = (float) ($ws['included_credits'] ?? 0);
@@ -781,6 +840,97 @@ function _swarmz_creditPoolsFromBalances($balances, array $baseCredits): array
     }
 
     return $out;
+}
+
+/**
+ * Format a credit figure for display: whole numbers render bare ("15"),
+ * fractional spend keeps one decimal ("7.5") instead of silently truncating —
+ * one-off grants with fractional consumption are the norm on the free lane.
+ *
+ * @param mixed $v
+ * @return string
+ */
+function _swarmz_fmtCredits($v): string
+{
+    if (!is_numeric($v)) {
+        return '0';
+    }
+    $f = (float) $v;
+    return (floor($f) === $f) ? (string) (int) $f : number_format($f, 1);
+}
+
+/**
+ * Resolve the free-credits card into a display decision the template renders
+ * without any arithmetic:
+ *
+ *   kind      'none' | 'unlimited' | 'daily' | 'monthly' | 'one_time'
+ *   remaining string      pre-formatted numerator
+ *   total     string|null pre-formatted denominator (null = no denominator)
+ *
+ * The grant cadence comes from the plan (freeMode). When unknown — an older
+ * API deployment, or a plan assigned before grant modes existed — the
+ * historical daily-allowance behaviour is preserved.
+ *
+ * @param array<string,mixed> $usage swarmz_UsageUpdate result.
+ * @return array{kind:string, remaining:string, total:?string}
+ */
+function _swarmz_freeCardView(array $usage): array
+{
+    $mode = $usage['freeMode'] ?? null;
+
+    if ($mode === 'none') {
+        return ['kind' => 'none', 'remaining' => '0', 'total' => null];
+    }
+
+    if ($mode === 'one_time' || $mode === 'monthly') {
+        $total = $usage['freeTotal'] ?? null;
+        if (!is_numeric($total) || (float) $total <= 0) {
+            // Mode says a grant exists but the lane was never seeded — render
+            // "not included" rather than a fabricated number.
+            return ['kind' => 'none', 'remaining' => '0', 'total' => null];
+        }
+        $remaining = $usage['freeRemaining'] ?? null;
+        if (!is_numeric($remaining)) {
+            $used = $usage['freeUsed'] ?? null;
+            $remaining = max(0.0, (float) $total - (is_numeric($used) ? (float) $used : 0.0));
+        }
+        return [
+            'kind'      => $mode,
+            'remaining' => _swarmz_fmtCredits($remaining),
+            'total'     => _swarmz_fmtCredits($total),
+        ];
+    }
+
+    // 'daily', or unknown mode → legacy default. Live lane values when the
+    // API returned them, else the caps-derived freeDaily/freeDailyUsed pair.
+    $daily = $usage['freeTotal'] ?? null;
+    if (!is_numeric($daily)) {
+        $daily = $usage['freeDaily'] ?? null;
+    }
+    if ($daily === null || !is_numeric($daily)) {
+        // No per-day ceiling known: unlimited (or nothing known yet — the
+        // pre-existing placeholder behaviour).
+        return ['kind' => 'unlimited', 'remaining' => '', 'total' => null];
+    }
+    if ((float) $daily <= 0) {
+        // 0/day in daily mode = the plan simply has no free credits.
+        return ['kind' => 'none', 'remaining' => '0', 'total' => null];
+    }
+    $remaining = $usage['freeRemaining'] ?? null;
+    if (!is_numeric($remaining)) {
+        $used = $usage['freeUsed'] ?? null;
+        if (!is_numeric($used)) {
+            $used = $usage['freeDailyUsed'] ?? null;
+        }
+        $remaining = is_numeric($used)
+            ? max(0.0, (float) $daily - (float) $used)
+            : (float) $daily;
+    }
+    return [
+        'kind'      => 'daily',
+        'remaining' => _swarmz_fmtCredits($remaining),
+        'total'     => _swarmz_fmtCredits($daily),
+    ];
 }
 
 /**
@@ -902,6 +1052,10 @@ function swarmz_ClientArea(array $params)
     // Pull usage (best-effort; on failure, render placeholders).
     $usage = swarmz_UsageUpdate($params);
 
+    // Resolve the free-credits card once, in PHP — kind + pre-formatted
+    // numbers — so the template renders it without arithmetic.
+    $freeCard = _swarmz_freeCardView($usage);
+
     return [
         'templatefile' => 'overview',
         'vars' => [
@@ -921,7 +1075,13 @@ function swarmz_ClientArea(array $params)
             // Three SEPARATE credit pools (never merged). Values come from the
             // live per-pool balances + plan caps in the platform-usage API
             // response — never from any locally-configured option.
-            // 1) Free — daily allowance (+ optional monthly free cap).
+            // 1) Free — grant cadence comes from the plan (freeKind); the
+            //    numbers are pre-resolved + pre-formatted in PHP so the
+            //    template does zero arithmetic.
+            'freeKind'             => $freeCard['kind'],
+            'freeRemainingFmt'     => $freeCard['remaining'],
+            'freeTotalFmt'         => $freeCard['total'],
+            // Legacy fields — kept for field-modified templates.
             'freeDaily'            => $usage['freeDaily']        ?? null,  // null = unlimited
             'freeDailyUsed'        => $usage['freeDailyUsed']    ?? null,
             'freeMonthlyCap'       => $usage['freeMonthlyCap']   ?? null,
@@ -931,12 +1091,15 @@ function swarmz_ClientArea(array $params)
             'monthlyRemaining'     => $usage['monthlyRemaining'] ?? null,
             'rolloverCredits'      => $usage['rolloverCredits']  ?? null,
             'rolloverMonths'       => $usage['rolloverMonths']   ?? 0,
-            // 3) Cloud credits — per-cycle lane (falls back to monthly when spent).
+            // 3) Cloud credits — separate lane; cadence from the plan
+            //    ('monthly' | 'one_time' | 'none'; null = legacy per-cycle).
             'cloudGrant'           => $usage['cloudGrant']          ?? 0,
             'cloudGrantRemaining'  => $usage['cloudGrantRemaining'] ?? 0,
-            // 4) AI credits — per-cycle lane (falls back to monthly when spent).
+            'cloudMode'            => $usage['cloudMode']           ?? null,
+            // 4) AI credits — separate lane; cadence from the plan.
             'aiGrant'              => $usage['aiGrant']             ?? 0,
             'aiGrantRemaining'     => $usage['aiGrantRemaining']    ?? 0,
+            'aiMode'               => $usage['aiMode']              ?? null,
             // Where the credit numbers came from ('live' | 'api') — for sub-labels.
             'creditsSource'        => $usage['creditsSource']    ?? 'api',
             // Host-configurable presentation, set in the Reseller Console addon
