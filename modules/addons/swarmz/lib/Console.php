@@ -422,7 +422,9 @@ class Console
                 . '<td>' . $this->esc((string) ($p['display_name'] ?? ($p['code'] ?? '—'))) . '</td>'
                 . '<td><code>' . $this->esc((string) ($p['code'] ?? '')) . '</code></td>'
                 . '<td class="swz-num">' . $this->planNum($p['monthly_credits'] ?? null) . '</td>'
-                . '<td class="swz-num">' . $this->planNum($p['free_credits_per_day'] ?? null) . '</td>'
+                . '<td class="swz-num">' . $this->planFreeGrant($p) . '</td>'
+                . '<td class="swz-num">' . $this->planLaneGrant($p, 'monthly_cloud_credits', 'cloud_credit_mode') . '</td>'
+                . '<td class="swz-num">' . $this->planLaneGrant($p, 'monthly_ai_credits', 'ai_credit_mode') . '</td>'
                 . '<td class="swz-num">' . $this->planNum($p['monthly_credit_cap'] ?? null) . '</td>'
                 . '<td class="swz-num">' . $this->planNum($p['rollover_months'] ?? null) . '</td>'
                 . '<td class="swz-num">' . $this->planLimit($p['max_projects'] ?? null) . '</td>'
@@ -437,7 +439,8 @@ class Console
         $table = '<div class="swz-tablewrap"><table class="swz-table">'
             . '<thead><tr>'
             . '<th>Plan</th><th>Code</th>'
-            . '<th class="swz-num">Monthly credits</th><th class="swz-num">Free/day</th>'
+            . '<th class="swz-num">Monthly credits</th><th class="swz-num">Free</th>'
+            . '<th class="swz-num">Cloud</th><th class="swz-num">AI</th>'
             . '<th class="swz-num">Monthly cap</th><th class="swz-num">Rollover</th>'
             . '<th class="swz-num">Projects</th><th class="swz-num">Published</th>'
             . '<th class="swz-num">Domains</th><th>Compute</th>'
@@ -456,6 +459,50 @@ class Console
             return '—';
         }
         return is_numeric($v) ? number_format((float) $v) : $this->esc((string) $v);
+    }
+
+    /**
+     * Free-credits column: amount + grant cadence per the plan's
+     * free_credit_mode ("5/day", "15/mo", "15 once", "—"). Plans from an
+     * older API (no mode field) fall back to the historical per-day amount.
+     */
+    private function planFreeGrant(array $p): string
+    {
+        $mode = isset($p['free_credit_mode']) && is_string($p['free_credit_mode'])
+            ? $p['free_credit_mode'] : null;
+        switch ($mode) {
+            case 'none':
+                return '—';
+            case 'one_time':
+                $v = $p['free_credits_one_time'] ?? null;
+                return (is_numeric($v) && (float) $v > 0) ? $this->planNum($v) . ' once' : '—';
+            case 'monthly':
+                $v = $p['free_credits_monthly'] ?? null;
+                return (is_numeric($v) && (float) $v > 0) ? $this->planNum($v) . '/mo' : '—';
+            default: // 'daily', or an older API without mode fields
+                $v = $p['free_credits_per_day'] ?? null;
+                if ($v === null || $v === '') {
+                    return '—';
+                }
+                return (is_numeric($v) && (float) $v > 0) ? $this->planNum($v) . '/day' : '—';
+        }
+    }
+
+    /**
+     * Cloud/AI lane column: grant amount + cadence ("20/cycle", "20 once",
+     * "—"). Missing amount (older API) or mode 'none' → "—".
+     */
+    private function planLaneGrant(array $p, string $amountKey, string $modeKey): string
+    {
+        $amount = $p[$amountKey] ?? null;
+        if (!is_numeric($amount) || (float) $amount <= 0) {
+            return '—';
+        }
+        $mode = isset($p[$modeKey]) && is_string($p[$modeKey]) ? $p[$modeKey] : null;
+        if ($mode === 'none') {
+            return '—';
+        }
+        return $this->planNum($amount) . ($mode === 'one_time' ? ' once' : '/cycle');
     }
 
     /** Format a capped limit where null/0 = unlimited (sentinel D1). */

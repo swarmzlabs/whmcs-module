@@ -7,10 +7,11 @@
  *
  * Credits are shown as SEPARATE pools — never one merged number, never in USD
  * (dollar figures would leak internal cost/profit to the host's customer):
- *   1. Free credits    — daily allowance (resets 00:00 UTC), optional monthly cap.
+ *   1. Free credits    — granted per the plan's cadence: daily allowance,
+ *                        monthly allowance, or a one-time grant.
  *   2. Monthly credits — paid build grant, resets on the billing cycle, may roll over.
- *   3. Cloud credits   — per-cycle cloud lane (falls back to monthly when spent).
- *   4. AI credits      — per-cycle AI lane (falls back to monthly when spent).
+ *   3. Cloud credits   — cloud lane; renews per cycle OR a one-time grant.
+ *   4. AI credits      — AI lane; renews per cycle OR a one-time grant.
  *
  * Values + plan caps come entirely from the platform-usage API response (live
  * per-pool balances + balances.by_workspace[].caps); the module no longer holds
@@ -23,18 +24,25 @@
  *   usage                array   — from swarmz_UsageUpdate
  *
  *   --- Credit pools ---
- *   freeDaily            int|null   — daily free allowance (null = unlimited)
- *   freeDailyUsed        int|null   — used today (often null; not tracked offline)
- *   freeMonthlyCap       int|null   — optional monthly free ceiling (null = none)
+ *   freeKind             string      — display decision, resolved in PHP:
+ *                                      'none' | 'unlimited' | 'daily' |
+ *                                      'monthly' | 'one_time'
+ *   freeRemainingFmt     string      — pre-formatted remaining ("7.5")
+ *   freeTotalFmt         string|null — pre-formatted pool size (null = n/a)
+ *   freeMonthlyCap       int|null    — optional monthly ceiling (daily mode)
+ *   freeDaily            int|null    — LEGACY (kept for modified templates)
+ *   freeDailyUsed        int|null    — LEGACY
  *   monthlyCredits       int|float  — paid monthly grant size (0 = none)
  *   monthlyUsed          int|float|null
  *   monthlyRemaining     int|float|null
  *   rolloverCredits      int|float|null — carried-over remaining (null = n/a)
  *   rolloverMonths       int        — configured carry-over months (0 = none)
- *   cloudGrant           int|float  — monthly cloud-credit grant size (0 = none)
- *   cloudGrantRemaining  int|float  — cloud credits remaining this cycle
- *   aiGrant              int|float  — monthly AI-credit grant size (0 = none)
- *   aiGrantRemaining     int|float  — AI credits remaining this cycle
+ *   cloudGrant           int|float  — cloud-credit grant size (0 = none)
+ *   cloudGrantRemaining  int|float  — cloud credits remaining
+ *   cloudMode            string|null — 'monthly' | 'one_time' | 'none' | null=legacy
+ *   aiGrant              int|float  — AI-credit grant size (0 = none)
+ *   aiGrantRemaining     int|float  — AI credits remaining
+ *   aiMode               string|null — 'monthly' | 'one_time' | 'none' | null=legacy
  *   creditsSource        string     — 'live' | 'api'
  *
  *   --- Other usage ---
@@ -54,17 +62,11 @@
 
 {assign var="ct" value=$creditTerm|default:'credits'}
 
-{* Resolve "remaining" for each pool. Prefer an explicit *Remaining; otherwise
-   fall back to the pool size (a fresh, unused allowance).
-   NOTE: config-option values arrive as STRINGS, so we gate the subtraction on
-   is_numeric for BOTH operands — PHP 8 throws a fatal "Unsupported operand
-   types: float - string" on arithmetic with a non-numeric string, and a bare
-   `!== null` check does not catch an empty/non-numeric string. *}
-{assign var="freeRemaining" value=$freeDaily}
-{if $freeDaily !== null && $freeDailyUsed !== null && $freeDaily|is_numeric && $freeDailyUsed|is_numeric}
-    {assign var="freeRemaining" value=$freeDaily-$freeDailyUsed}
-    {if $freeRemaining < 0}{assign var="freeRemaining" value=0}{/if}
-{/if}
+{* Free-pool display is fully resolved in PHP (_swarmz_freeCardView):
+   freeKind + pre-formatted freeRemainingFmt / freeTotalFmt. The old
+   template-side freeDaily-freeDailyUsed arithmetic is gone — it assumed
+   every plan grants free credits daily, which showed "0 / 0 · resets daily"
+   for one_time/monthly-mode plans. *}
 
 {if $monthlyRemaining !== null}
     {assign var="monthlyRem" value=$monthlyRemaining}
@@ -136,16 +138,28 @@
         <div class="swz-section-title">Your {$ct|escape}</div>
         <div class="swz-grid">
 
-            {* 1) Free credits — daily allowance, resets 00:00 UTC. *}
+            {* 1) Free credits — copy follows the plan's grant cadence
+                  (freeKind): daily allowance / monthly allowance / one-time
+                  grant / none / unlimited. *}
             <div class="swz-card">
                 <p class="swz-card-label">Free {$ct|escape}</p>
-                {if $freeRemaining === null}
+                {if $freeKind === 'none'}
+                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
+                    <div class="swz-sub">Not included on this plan</div>
+                {elseif $freeKind === 'unlimited'}
                     <div class="swz-num">&infin;</div>
-                    <div class="swz-sub">Unlimited daily {$ct|escape}</div>
+                    <div class="swz-sub">Unlimited {$ct|escape}</div>
+                {elseif $freeKind === 'one_time'}
+                    <div class="swz-num">{$freeRemainingFmt}<small> / {$freeTotalFmt}</small></div>
+                    <div class="swz-sub">One-time allowance &middot; does not renew</div>
+                {elseif $freeKind === 'monthly'}
+                    <div class="swz-num">{$freeRemainingFmt}<small> / {$freeTotalFmt}</small></div>
+                    <div class="swz-sub">Replenishes monthly</div>
                 {else}
-                    <div class="swz-num">{$freeRemaining|string_format:"%d"}{if $freeDaily !== null}<small> / {$freeDaily|string_format:"%d"}</small>{/if}</div>
+                    {* daily *}
+                    <div class="swz-num">{$freeRemainingFmt}<small> / {$freeTotalFmt}</small></div>
                     <div class="swz-sub">
-                        {if $freeDaily !== null}{$freeDaily|string_format:"%d"}/day &middot; {/if}resets daily (00:00 UTC)
+                        {$freeTotalFmt}/day &middot; resets daily (00:00 UTC)
                         {if $freeMonthlyCap !== null && $freeMonthlyCap > 0}<br><span class="swz-muted">Up to {$freeMonthlyCap|string_format:"%d"} {$ct|escape}/month</span>{/if}
                     </div>
                 {/if}
@@ -167,27 +181,29 @@
                 {/if}
             </div>
 
-            {* 3) Cloud credits — separate lane (falls back to monthly when spent). *}
+            {* 3) Cloud credits — separate lane; cadence line follows the
+                  plan's grant mode (null = legacy per-cycle wording). *}
             <div class="swz-card">
                 <p class="swz-card-label">Cloud {$ct|escape}</p>
-                {if $cloudGrant > 0}
-                    <div class="swz-num">{$cloudGrantRemaining|string_format:"%d"}<small> / {$cloudGrant|string_format:"%d"}</small></div>
-                    <div class="swz-sub">Renews each billing cycle</div>
-                {else}
+                {if $cloudMode === 'none' || !($cloudGrant > 0)}
                     <div class="swz-num" style="opacity:.45;">&mdash;</div>
                     <div class="swz-sub">Not included on this plan</div>
+                {else}
+                    <div class="swz-num">{$cloudGrantRemaining|string_format:"%d"}<small> / {$cloudGrant|string_format:"%d"}</small></div>
+                    <div class="swz-sub">{if $cloudMode === 'one_time'}One-time allowance &middot; does not renew{else}Renews each billing cycle{/if}</div>
                 {/if}
             </div>
 
-            {* 4) AI credits — separate lane (falls back to monthly when spent). *}
+            {* 4) AI credits — separate lane; cadence line follows the plan's
+                  grant mode (null = legacy per-cycle wording). *}
             <div class="swz-card">
                 <p class="swz-card-label">AI {$ct|escape}</p>
-                {if $aiGrant > 0}
-                    <div class="swz-num">{$aiGrantRemaining|string_format:"%d"}<small> / {$aiGrant|string_format:"%d"}</small></div>
-                    <div class="swz-sub">Renews each billing cycle</div>
-                {else}
+                {if $aiMode === 'none' || !($aiGrant > 0)}
                     <div class="swz-num" style="opacity:.45;">&mdash;</div>
                     <div class="swz-sub">Not included on this plan</div>
+                {else}
+                    <div class="swz-num">{$aiGrantRemaining|string_format:"%d"}<small> / {$aiGrant|string_format:"%d"}</small></div>
+                    <div class="swz-sub">{if $aiMode === 'one_time'}One-time allowance &middot; does not renew{else}Renews each billing cycle{/if}</div>
                 {/if}
             </div>
 

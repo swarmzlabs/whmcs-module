@@ -5,6 +5,51 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-07-12
+
+Grant-cadence display pass: the client area now shows every credit pool the
+way the plan actually grants it, instead of assuming free credits are daily
+and Cloud/AI renew each cycle.
+
+### Fixed
+- **One-time / monthly free credits no longer render as "0 / 0".** The
+  client-area free-credits card read only `caps.credits_per_day`, which is `0`
+  for plans granting free credits `one_time` or `monthly` — a customer holding
+  a 15-credit one-time grant (7.5 already spent) saw
+  "0 / 0 · 0/day · resets daily (00:00 UTC) · Up to 15 credits/month". The
+  card now follows the plan's `free_credit_mode` and the live free-lane
+  counters the platform's spend function actually enforces, rendering
+  "7.5 / 15 · One-time allowance · does not renew" (and the monthly-mode
+  equivalent "11 / 15 · Replenishes monthly"). Fractional free-lane figures
+  keep one decimal instead of truncating.
+- **Plans with no free credits show "— · Not included on this plan"** (like
+  the other pools) instead of a fabricated "0 / 0 · resets daily".
+
+### Changed
+- **Cloud/AI credit cards say how the grant renews.** The sub-line follows the
+  plan's `cloud_credit_mode` / `ai_credit_mode`: "Renews each billing cycle"
+  for monthly grants, "One-time allowance · does not renew" for one-time
+  grants, "Not included on this plan" for none. (Requires the 2026-07 platform
+  API; older APIs keep the previous per-cycle wording.)
+- **Reseller Console plans table is cadence-aware.** The "Free/day" column is
+  now "Free" and renders the configured grant with its cadence ("5/day",
+  "15/mo", "15 once"); new "Cloud" and "AI" columns show those lanes'
+  grants ("20/cycle", "20 once") from the platform-plans response.
+- The free-card display decision is resolved in PHP
+  (`_swarmz_freeCardView()`) and handed to the template pre-formatted; the
+  template no longer does credit arithmetic. The legacy `freeDaily` /
+  `freeDailyUsed` variables are still passed for field-modified templates.
+- `lib/Api.php`: `Api::VERSION` bumped `1.7.0` → `1.8.0`; Reseller Console
+  addon `version` bumped to `1.8.0`.
+
+### Compatibility
+- Fully backward-compatible with older platform APIs: when the response lacks
+  the new `free_*` counters / `*_credit_mode` caps, the module keeps the
+  previous daily-allowance rendering. Pairs best with platform API 2026-07-12
+  or later (`platform-usage` balances carry the free lane + grant modes;
+  `platform-plans` carries `monthly_cloud_credits` / `monthly_ai_credits` +
+  `cloud_credit_mode` / `ai_credit_mode`).
+
 ## [1.7.0] - 2026-07-06
 
 Reliability + display pass: a re-minting SSO launcher, a credits-native admin
