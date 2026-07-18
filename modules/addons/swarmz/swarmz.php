@@ -25,12 +25,14 @@
  */
 
 use WHMCS\Module\Addon\Swarmz\Console;
+use WHMCS\Module\Addon\Swarmz\PromptBox;
 
 if (!defined('WHMCS')) {
     die('You cannot access this file directly.');
 }
 
 require_once __DIR__ . '/lib/Console.php';
+require_once __DIR__ . '/lib/PromptBox.php';
 
 /**
  * Addon configuration + the host-side settings page.
@@ -48,7 +50,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.8.0',
+        'version'     => '1.9.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
@@ -94,17 +96,29 @@ function swarmz_config()
 }
 
 /**
- * Activation. No schema is required — the console reads live from WHMCS + the
- * Swarmz API on each page load, so there is nothing to migrate.
+ * Activation. Creates the prompt-box intent table (mod_swarmz_prompt_intents);
+ * everything else reads live from WHMCS + the Swarmz API on each page load.
  *
  * @return array{status:string, description:string}
  */
 function swarmz_activate()
 {
+    PromptBox::ensureSchema();
     return [
         'status'      => 'success',
-        'description' => 'Swarmz Reseller Console activated. Set your API Key in this module\'s settings (if not already), then open it from the sidebar to view customer plans and live usage.',
+        'description' => 'Swarmz Reseller Console activated. Set your API Key in this module\'s settings (if not already), then open it from the sidebar to view customer plans and live usage — and grab your embeddable Prompt Box from the toolbar.',
     ];
+}
+
+/**
+ * Version upgrade. Ensures the prompt-box schema exists for installs that
+ * activated on an older version (activate() only runs once).
+ *
+ * @param array $vars
+ */
+function swarmz_upgrade($vars)
+{
+    PromptBox::ensureSchema();
 }
 
 /**

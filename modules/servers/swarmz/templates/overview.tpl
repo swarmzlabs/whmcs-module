@@ -1,72 +1,26 @@
 {*
- * Client-area overview template.
+ * Client-area overview template (redesigned in 1.9.0).
  *
  * Deliberately UNBRANDED: no "swarmz" marks here — the host resells this under
- * their own brand. The SSO button label, the word used for "credits", and which
- * spend figures show are all host-configurable via the Reseller Console addon.
+ * their own brand. The SSO button label, the word used for "credits", and the
+ * support link are all host-configurable via the Reseller Console addon.
  *
  * Credits are shown as SEPARATE pools — never one merged number, never in USD
  * (dollar figures would leak internal cost/profit to the host's customer):
- *   1. Free credits    — granted per the plan's cadence: daily allowance,
- *                        monthly allowance, or a one-time grant.
+ *   1. Free credits    — granted per the plan's cadence (daily / monthly / one-time).
  *   2. Monthly credits — paid build grant, resets on the billing cycle, may roll over.
  *   3. Cloud credits   — cloud lane; renews per cycle OR a one-time grant.
  *   4. AI credits      — AI lane; renews per cycle OR a one-time grant.
  *
- * Values + plan caps come entirely from the platform-usage API response (live
- * per-pool balances + balances.by_workspace[].caps); the module no longer holds
- * any locally-configured allowances.
+ * Values + plan caps come entirely from the platform-usage API response; all
+ * arithmetic (formatting, remaining percentages) is done in PHP — the template
+ * only branches and prints.
  *
- * Provided variables (set by swarmz_ClientArea):
- *   tenantId             string|null
- *   dashboardUrl         string|null
- *   ssoUrl               string  — WHMCS SSO trigger URL
- *   usage                array   — from swarmz_UsageUpdate
- *
- *   --- Credit pools ---
- *   freeKind             string      — display decision, resolved in PHP:
- *                                      'none' | 'unlimited' | 'daily' |
- *                                      'monthly' | 'one_time'
- *   freeRemainingFmt     string      — pre-formatted remaining ("7.5")
- *   freeTotalFmt         string|null — pre-formatted pool size (null = n/a)
- *   freeMonthlyCap       int|null    — optional monthly ceiling (daily mode)
- *   freeDaily            int|null    — LEGACY (kept for modified templates)
- *   freeDailyUsed        int|null    — LEGACY
- *   monthlyCredits       int|float  — paid monthly grant size (0 = none)
- *   monthlyUsed          int|float|null
- *   monthlyRemaining     int|float|null
- *   rolloverCredits      int|float|null — carried-over remaining (null = n/a)
- *   rolloverMonths       int        — configured carry-over months (0 = none)
- *   cloudGrant           int|float  — cloud-credit grant size (0 = none)
- *   cloudGrantRemaining  int|float  — cloud credits remaining
- *   cloudMode            string|null — 'monthly' | 'one_time' | 'none' | null=legacy
- *   aiGrant              int|float  — AI-credit grant size (0 = none)
- *   aiGrantRemaining     int|float  — AI credits remaining
- *   aiMode               string|null — 'monthly' | 'one_time' | 'none' | null=legacy
- *   creditsSource        string     — 'live' | 'api'
- *
- *   --- Other usage ---
- *   creditsUsed          float
- *   projectsCount        int|null
- *   domainsCount         int|null   — live count (often null; API doesn't return it)
- *   domainsLimit         int|null   — null = unlimited
- *   publishedCount       int|null
- *   publishedLimit       int|null   — null = unlimited
- *   customDomainsEnabled bool
- *
- *   --- Host-configurable via the Reseller Console addon module ---
- *   editorButtonLabel  string  — SSO button text
- *   creditTerm         string  — what to call "credits"
- *   supportUrl         string  — optional host support link
+ * Provided variables: see swarmz_ClientArea() in ../swarmz.php. New in 1.9.0:
+ *   freePct / monthlyPct / cloudPct / aiPct  int|null — remaining % (null = no bar)
  *}
 
 {assign var="ct" value=$creditTerm|default:'credits'}
-
-{* Free-pool display is fully resolved in PHP (_swarmz_freeCardView):
-   freeKind + pre-formatted freeRemainingFmt / freeTotalFmt. The old
-   template-side freeDaily-freeDailyUsed arithmetic is gone — it assumed
-   every plan grants free credits daily, which showed "0 / 0 · resets daily"
-   for one_time/monthly-mode plans. *}
 
 {if $monthlyRemaining !== null}
     {assign var="monthlyRem" value=$monthlyRemaining}
@@ -75,56 +29,104 @@
 {/if}
 
 <style>
-/* Theme-neutral: borders + translucent fills derived from the current text
-   colour, so the cards read cleanly on light AND dark WHMCS themes without
-   depending on any brand palette. */
-.swz-area { margin-top: 20px; }
-.swz-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 4px; }
-.swz-head h3 { margin: 0; font-weight: 600; }
-.swz-grid { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+/* Theme-neutral: every tone is derived from the surrounding theme's text
+   colour (currentColor + gray alphas), so the panel reads cleanly on light
+   AND dark WHMCS themes without depending on any palette. The one brand
+   accent — the launch button — inherits the theme's own btn-primary. */
+.swz-area { margin-top: 22px; }
+.swz-hero {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+    border: 1px solid rgba(128,128,128,.20);
+    border-radius: 16px;
+    padding: 20px 22px;
+    background:
+        radial-gradient(1200px 240px at 0% 0%, rgba(128,128,128,.10), transparent 60%),
+        rgba(128,128,128,.04);
+}
+.swz-hero-title { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+.swz-hero-sub { margin: 5px 0 0; font-size: 13px; opacity: .62; display: flex; align-items: center; gap: 7px; }
+.swz-live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #30a46c; box-shadow: 0 0 0 3px rgba(48,164,108,.18);
+    display: inline-block; flex: 0 0 auto;
+}
+.swz-launch {
+    font-size: 15px !important; font-weight: 600 !important;
+    padding: 12px 22px !important; border-radius: 12px !important;
+    display: inline-flex !important; align-items: center; gap: 9px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.14);
+    transition: transform .15s ease, box-shadow .15s ease;
+}
+.swz-launch:hover { transform: translateY(-1px); box-shadow: 0 9px 24px rgba(0,0,0,.18); }
+.swz-launch .swz-arrow { transition: transform .15s ease; display: inline-block; }
+.swz-launch:hover .swz-arrow { transform: translateX(3px); }
+.swz-section-title {
+    font-size: 12px; font-weight: 700; opacity: .55;
+    text-transform: uppercase; letter-spacing: .07em; margin: 26px 0 10px;
+}
+.swz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 14px; }
 .swz-card {
-    flex: 1 1 200px;
-    min-width: 180px;
-    border: 1px solid rgba(128,128,128,.22);
-    border-radius: 10px;
-    padding: 16px 16px 14px;
-    background: rgba(128,128,128,.05);
+    border: 1px solid rgba(128,128,128,.20);
+    border-radius: 14px;
+    padding: 16px 17px 15px;
+    background: rgba(128,128,128,.045);
+    display: flex; flex-direction: column; gap: 10px;
+    min-width: 0;
 }
 .swz-card-label {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: .04em;
-    text-transform: uppercase;
-    opacity: .7;
-    margin: 0 0 8px;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .05em;
+    text-transform: uppercase; opacity: .62; margin: 0;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
-.swz-num { font-size: 28px; font-weight: 700; line-height: 1.1; }
-.swz-num small { font-size: 16px; font-weight: 600; opacity: .5; }
-.swz-sub { font-size: 12.5px; opacity: .65; margin-top: 6px; line-height: 1.45; }
+.swz-cadence {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .02em; text-transform: none;
+    border: 1px solid rgba(128,128,128,.28); border-radius: 999px;
+    padding: 2px 8px; opacity: .75; white-space: nowrap;
+}
+.swz-num { font-size: 27px; font-weight: 750; line-height: 1.05; letter-spacing: -.01em; }
+.swz-num small { font-size: 15px; font-weight: 600; opacity: .45; }
+.swz-num-muted { opacity: .4; }
+.swz-bar { height: 5px; border-radius: 999px; background: rgba(128,128,128,.16); overflow: hidden; }
+.swz-bar-fill { height: 100%; border-radius: 999px; background: currentColor; opacity: .55; }
+.swz-low { color: #e5484d; }
+.swz-low .swz-bar-fill { opacity: .8; }
+.swz-sub { font-size: 12.5px; opacity: .62; line-height: 1.45; margin: 0; }
 .swz-sub .swz-muted { opacity: .8; }
-.swz-section-title { font-size: 13px; font-weight: 600; opacity: .6; text-transform: uppercase; letter-spacing: .04em; margin: 24px 0 0; }
-.swz-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-@media (max-width: 600px) { .swz-card { flex: 1 1 100%; } }
+.swz-footer { margin-top: 18px; font-size: 12.5px; opacity: .65; }
+@media (max-width: 640px) {
+    .swz-hero { padding: 16px; }
+    .swz-launch { width: 100%; justify-content: center; }
+    .swz-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 420px) {
+    .swz-grid { grid-template-columns: 1fr; }
+}
 </style>
 
 <div class="swz-area">
-    <div class="swz-head">
-        <h3>Your workspace</h3>
+
+    {* ---------- Hero: workspace status + launch ---------- *}
+    <div class="swz-hero">
+        <div>
+            <h3 class="swz-hero-title">Your workspace</h3>
+            {if $tenantId}
+                <p class="swz-hero-sub"><span class="swz-live-dot"></span> Ready — jump back into the editor any time.</p>
+            {else}
+                <p class="swz-hero-sub">Being prepared…</p>
+            {/if}
+        </div>
         {if $tenantId}
-            <div class="swz-actions">
-                {* SSO launcher: POST to our custom action (swarmz_launch), which
-                   re-mints a fresh sign-on redirect on every click. Opens in a
-                   NEW TAB so repeat launches aren't suppressed by bfcache /
-                   WHMCS's built-in dosinglesignon idempotency (the customer's
-                   editor lives on a different apex than WHMCS). modop=custom is
-                   a POST action, so this is a form, not a link. *}
-                <form action="clientarea.php?action=productdetails" method="post" target="_blank" rel="noopener" style="display:inline;">
-                    <input type="hidden" name="id" value="{$serviceId}" />
-                    <input type="hidden" name="modop" value="custom" />
-                    <input type="hidden" name="a" value="launch" />
-                    <button type="submit" class="btn btn-primary btn-lg">{$editorButtonLabel|default:'Open AI Editor'|escape} &rarr;</button>
-                </form>
-            </div>
+            {* SSO launcher: POST to the module's custom action (swarmz_launch),
+               which re-mints a fresh sign-on redirect on EVERY click. Opens in
+               a new tab so repeat launches are never suppressed by bfcache /
+               WHMCS's built-in dosinglesignon idempotency. *}
+            <form action="clientarea.php?action=productdetails" method="post" target="_blank" rel="noopener" style="display:inline;">
+                <input type="hidden" name="id" value="{$serviceId}" />
+                <input type="hidden" name="modop" value="custom" />
+                <input type="hidden" name="a" value="launch" />
+                <button type="submit" class="btn btn-primary swz-launch">{$editorButtonLabel|default:'Open AI Editor'|escape} <span class="swz-arrow">&rarr;</span></button>
+            </form>
         {/if}
     </div>
 
@@ -134,82 +136,100 @@
         </div>
     {else}
 
-        {* ---------- Credits: three SEPARATE pools ---------- *}
+        {* ---------- Credits: four SEPARATE pools with progress bars ---------- *}
         <div class="swz-section-title">Your {$ct|escape}</div>
         <div class="swz-grid">
 
-            {* 1) Free credits — copy follows the plan's grant cadence
-                  (freeKind): daily allowance / monthly allowance / one-time
-                  grant / none / unlimited. *}
-            <div class="swz-card">
-                <p class="swz-card-label">Free {$ct|escape}</p>
+            {* 1) Free credits — copy follows the plan's grant cadence. *}
+            <div class="swz-card{if $freePct !== null && $freePct <= 12} swz-low{/if}">
+                <p class="swz-card-label">Free {$ct|escape}
+                    {if $freeKind === 'daily'}<span class="swz-cadence">Daily</span>
+                    {elseif $freeKind === 'monthly'}<span class="swz-cadence">Monthly</span>
+                    {elseif $freeKind === 'one_time'}<span class="swz-cadence">One-time</span>{/if}
+                </p>
                 {if $freeKind === 'none'}
-                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
-                    <div class="swz-sub">Not included on this plan</div>
+                    <div class="swz-num swz-num-muted">&mdash;</div>
+                    <p class="swz-sub">Not included on this plan</p>
                 {elseif $freeKind === 'unlimited'}
                     <div class="swz-num">&infin;</div>
-                    <div class="swz-sub">Unlimited {$ct|escape}</div>
-                {elseif $freeKind === 'one_time'}
-                    <div class="swz-num">{$freeRemainingFmt}<small> / {$freeTotalFmt}</small></div>
-                    <div class="swz-sub">One-time allowance &middot; does not renew</div>
-                {elseif $freeKind === 'monthly'}
-                    <div class="swz-num">{$freeRemainingFmt}<small> / {$freeTotalFmt}</small></div>
-                    <div class="swz-sub">Replenishes monthly</div>
+                    <p class="swz-sub">Unlimited {$ct|escape}</p>
                 {else}
-                    {* daily *}
                     <div class="swz-num">{$freeRemainingFmt}<small> / {$freeTotalFmt}</small></div>
-                    <div class="swz-sub">
-                        {$freeTotalFmt}/day &middot; resets daily (00:00 UTC)
-                        {if $freeMonthlyCap !== null && $freeMonthlyCap > 0}<br><span class="swz-muted">Up to {$freeMonthlyCap|string_format:"%d"} {$ct|escape}/month</span>{/if}
-                    </div>
+                    {if $freePct !== null}
+                        <div class="swz-bar"><div class="swz-bar-fill" style="width:{$freePct}%;"></div></div>
+                    {/if}
+                    {if $freeKind === 'one_time'}
+                        <p class="swz-sub">One-time allowance &middot; does not renew</p>
+                    {elseif $freeKind === 'monthly'}
+                        <p class="swz-sub">Replenishes monthly</p>
+                    {else}
+                        <p class="swz-sub">{$freeTotalFmt}/day &middot; resets daily (00:00 UTC)
+                            {if $freeMonthlyCap !== null && $freeMonthlyCap > 0}<br><span class="swz-muted">Up to {$freeMonthlyCap|string_format:"%d"} {$ct|escape}/month</span>{/if}
+                        </p>
+                    {/if}
                 {/if}
             </div>
 
             {* 2) Monthly credits — paid grant, resets on renewal, may roll over. *}
-            <div class="swz-card">
-                <p class="swz-card-label">Monthly {$ct|escape}</p>
+            <div class="swz-card{if $monthlyPct !== null && $monthlyPct <= 12} swz-low{/if}">
+                <p class="swz-card-label">Monthly {$ct|escape}
+                    {if $monthlyCredits > 0}<span class="swz-cadence">Per cycle</span>{/if}
+                </p>
                 {if $monthlyCredits > 0}
-                    <div class="swz-num">{$monthlyRem|string_format:"%d"}{if $monthlyCredits > 0}<small> / {$monthlyCredits|string_format:"%d"}</small>{/if}</div>
-                    <div class="swz-sub">
+                    <div class="swz-num">{$monthlyRem|string_format:"%d"}<small> / {$monthlyCredits|string_format:"%d"}</small></div>
+                    {if $monthlyPct !== null}
+                        <div class="swz-bar"><div class="swz-bar-fill" style="width:{$monthlyPct}%;"></div></div>
+                    {/if}
+                    <p class="swz-sub">
                         Renews each billing cycle
                         {if $rolloverCredits !== null && $rolloverCredits > 0}<br><span class="swz-muted">+ {$rolloverCredits|string_format:"%d"} rolled over</span>
                         {elseif $rolloverMonths > 0}<br><span class="swz-muted">Unused carry over {$rolloverMonths} mo</span>{/if}
-                    </div>
+                    </p>
                 {else}
-                    <div class="swz-num swz-num-muted" style="opacity:.45;">&mdash;</div>
-                    <div class="swz-sub">Not included on this plan</div>
+                    <div class="swz-num swz-num-muted">&mdash;</div>
+                    <p class="swz-sub">Not included on this plan</p>
                 {/if}
             </div>
 
-            {* 3) Cloud credits — separate lane; cadence line follows the
-                  plan's grant mode (null = legacy per-cycle wording). *}
-            <div class="swz-card">
-                <p class="swz-card-label">Cloud {$ct|escape}</p>
+            {* 3) Cloud credits — separate lane; cadence follows the plan. *}
+            <div class="swz-card{if $cloudPct !== null && $cloudPct <= 12} swz-low{/if}">
+                <p class="swz-card-label">Cloud {$ct|escape}
+                    {if $cloudMode === 'one_time'}<span class="swz-cadence">One-time</span>
+                    {elseif $cloudGrant > 0}<span class="swz-cadence">Per cycle</span>{/if}
+                </p>
                 {if $cloudMode === 'none' || !($cloudGrant > 0)}
-                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
-                    <div class="swz-sub">Not included on this plan</div>
+                    <div class="swz-num swz-num-muted">&mdash;</div>
+                    <p class="swz-sub">Not included on this plan</p>
                 {else}
                     <div class="swz-num">{$cloudGrantRemaining|string_format:"%d"}<small> / {$cloudGrant|string_format:"%d"}</small></div>
-                    <div class="swz-sub">{if $cloudMode === 'one_time'}One-time allowance &middot; does not renew{else}Renews each billing cycle{/if}</div>
+                    {if $cloudPct !== null}
+                        <div class="swz-bar"><div class="swz-bar-fill" style="width:{$cloudPct}%;"></div></div>
+                    {/if}
+                    <p class="swz-sub">{if $cloudMode === 'one_time'}One-time allowance &middot; does not renew{else}Renews each billing cycle{/if}</p>
                 {/if}
             </div>
 
-            {* 4) AI credits — separate lane; cadence line follows the plan's
-                  grant mode (null = legacy per-cycle wording). *}
-            <div class="swz-card">
-                <p class="swz-card-label">AI {$ct|escape}</p>
+            {* 4) AI credits — separate lane; cadence follows the plan. *}
+            <div class="swz-card{if $aiPct !== null && $aiPct <= 12} swz-low{/if}">
+                <p class="swz-card-label">AI {$ct|escape}
+                    {if $aiMode === 'one_time'}<span class="swz-cadence">One-time</span>
+                    {elseif $aiGrant > 0}<span class="swz-cadence">Per cycle</span>{/if}
+                </p>
                 {if $aiMode === 'none' || !($aiGrant > 0)}
-                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
-                    <div class="swz-sub">Not included on this plan</div>
+                    <div class="swz-num swz-num-muted">&mdash;</div>
+                    <p class="swz-sub">Not included on this plan</p>
                 {else}
                     <div class="swz-num">{$aiGrantRemaining|string_format:"%d"}<small> / {$aiGrant|string_format:"%d"}</small></div>
-                    <div class="swz-sub">{if $aiMode === 'one_time'}One-time allowance &middot; does not renew{else}Renews each billing cycle{/if}</div>
+                    {if $aiPct !== null}
+                        <div class="swz-bar"><div class="swz-bar-fill" style="width:{$aiPct}%;"></div></div>
+                    {/if}
+                    <p class="swz-sub">{if $aiMode === 'one_time'}One-time allowance &middot; does not renew{else}Renews each billing cycle{/if}</p>
                 {/if}
             </div>
 
         </div>
 
-        {* ---------- Plan limits + dashboard ---------- *}
+        {* ---------- Plan limits ---------- *}
         <div class="swz-section-title">Plan</div>
         <div class="swz-grid">
 
@@ -218,10 +238,10 @@
                 <p class="swz-card-label">Published apps</p>
                 {if $publishedCount !== null}
                     <div class="swz-num">{$publishedCount|string_format:"%d"}{if $publishedLimit !== null}<small> / {$publishedLimit|string_format:"%d"}</small>{/if}</div>
-                    <div class="swz-sub">Live right now</div>
+                    <p class="swz-sub">Live right now</p>
                 {else}
                     <div class="swz-num">{if $publishedLimit !== null}{$publishedLimit|string_format:"%d"}{else}&infin;{/if}</div>
-                    <div class="swz-sub">{if $publishedLimit !== null}Allowed at once{else}Unlimited{/if}</div>
+                    <p class="swz-sub">{if $publishedLimit !== null}Allowed at once{else}Unlimited{/if}</p>
                 {/if}
             </div>
 
@@ -229,20 +249,20 @@
             <div class="swz-card">
                 <p class="swz-card-label">Custom domains</p>
                 {if !$customDomainsEnabled}
-                    <div class="swz-num" style="opacity:.45;">&mdash;</div>
-                    <div class="swz-sub">Not available on this plan</div>
+                    <div class="swz-num swz-num-muted">&mdash;</div>
+                    <p class="swz-sub">Not available on this plan</p>
                 {elseif $domainsCount !== null}
                     <div class="swz-num">{$domainsCount|string_format:"%d"}{if $domainsLimit !== null}<small> / {$domainsLimit|string_format:"%d"}</small>{/if}</div>
-                    <div class="swz-sub">Connected</div>
+                    <p class="swz-sub">Connected</p>
                 {else}
                     <div class="swz-num">{if $domainsLimit !== null}{$domainsLimit|string_format:"%d"}{else}&infin;{/if}</div>
-                    <div class="swz-sub">{if $domainsLimit !== null}Allowed{else}Unlimited{/if}</div>
+                    <p class="swz-sub">{if $domainsLimit !== null}Allowed{else}Unlimited{/if}</p>
                 {/if}
             </div>
 
-            {* NOTE: USD spend cards were removed deliberately. The WHU must never
-               see dollar amounts (it leaks internal cost/profit) — all spend is
-               shown as CREDITS in the "Your credits" section above. *}
+            {* NOTE: USD spend cards were removed deliberately. The customer must
+               never see dollar amounts (they leak internal cost/profit) — all
+               spend is shown as CREDITS in the section above. *}
 
         </div>
 
@@ -253,7 +273,7 @@
         {/if}
 
         {if $supportUrl}
-            <div class="swz-sub" style="margin-top:16px;">
+            <div class="swz-footer">
                 Need help? <a href="{$supportUrl|escape}" target="_blank" rel="noopener">Contact support</a>.
             </div>
         {/if}

@@ -28,9 +28,12 @@ All calls are **idempotent** on `external_ref = whmcs:<serviceid>`, so WHMCS
 retries never double-provision.
 
 **One-click SSO** — an "Open AI Editor" button in both the client area and the
-admin service screen calls `platform-sso` and redirects the user straight
-into their workspace — their custom domain when configured, otherwise
-`<slug>.swarmz.net`. No Swarmz login prompt.
+admin service screen calls `platform-sso` fresh on every click and redirects
+the user straight into their workspace — the host's verified custom editor
+domain when configured, otherwise the platform apex. No Swarmz login prompt.
+Transient network/gateway blips are retried automatically (1.9.0), and any
+refusal (suspended, cancelled, still provisioning) surfaces as a
+plain-language, unbranded message.
 
 **Usage reporting** — `platform-usage` feeds credits used, AI USD spend, and
 cloud USD spend back into WHMCS for usage-based billing or client-area display.
@@ -65,6 +68,30 @@ behind a stable `code`, with a wholesale `price` for reference.
 > (free per day, monthly cap, max projects, etc.) were removed in 1.5.0.
 > Re-save each existing Swarmz product and pick a plan from the dropdown — see
 > the [CHANGELOG](CHANGELOG.md) for the full breaking-change note.
+
+**Prompt Box** — an embeddable widget for the host's own storefront (plain
+HTML, WordPress, any builder — one `<script>` tag). Visitors describe the app
+they want, optionally pick a plan inline, and land in the WHMCS cart with the
+prompt riding along as an opaque token. When the order provisions, the module
+passes it to `platform-create` as `initial_prompt` and the customer's first
+login opens the editor with that app **already building**. Grab the embed code
+(snippet builder + live preview + captured-prompts log) from the Reseller
+Console's **Prompt Box** view:
+
+```html
+<script src="https://YOUR-WHMCS/modules/addons/swarmz/promptbox.php?a=js"
+        data-pid="12"
+        data-button="Start building"
+        data-placeholder="Describe the app you want to build…"
+        data-theme="auto"
+        data-accent="#4f46e5"
+        async></script>
+```
+
+Add `data-plans='[{"pid":12,"label":"Starter","price":"$9/mo"},{"pid":13,"label":"Pro","price":"$29/mo"}]'`
+to offer several plans inline; point different entries at different WHMCS
+products. A `$0.00` product with instant activation gives the "type a prompt →
+free instance spins up building it" flow end-to-end.
 
 **Connection test** — the WHMCS "Test Connection" button validates the API key
 against `platform-sso` with a non-existent tenant id (read-only, no side
