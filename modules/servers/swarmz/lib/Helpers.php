@@ -627,6 +627,60 @@ class Helpers
         return 'Swarmz: ' . ($msg !== '' ? $msg : get_class($e));
     }
 
+    // ---------------- Prompt-box bridge (addon-owned storage) ----------------
+    //
+    // The prompt-box intent table + logic live in the ADDON module
+    // (modules/addons/swarmz/lib/PromptBox.php) because the capture endpoint
+    // and checkout hooks are addon surfaces. The provisioning module only ever
+    // needs two operations at CreateAccount time; both degrade to no-ops when
+    // the addon isn't installed/activated (class or table absent).
+
+    /** Load the addon's PromptBox class if the addon is installed. */
+    private static function promptBoxAvailable(): bool
+    {
+        if (class_exists('\\WHMCS\\Module\\Addon\\Swarmz\\PromptBox')) {
+            return true;
+        }
+        $path = __DIR__ . '/../../../addons/swarmz/lib/PromptBox.php';
+        if (is_file($path)) {
+            try {
+                require_once $path;
+            } catch (\Throwable $e) {
+                return false;
+            }
+        }
+        return class_exists('\\WHMCS\\Module\\Addon\\Swarmz\\PromptBox');
+    }
+
+    /**
+     * The unused storefront prompt bound to this service (or null). Attached
+     * to platform-create as `initial_prompt`.
+     */
+    public static function pendingPromptForService(int $serviceId): ?string
+    {
+        try {
+            if (!self::promptBoxAvailable()) {
+                return null;
+            }
+            return \WHMCS\Module\Addon\Swarmz\PromptBox::pendingPromptForService($serviceId);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** Mark the service's prompt intent consumed after a successful provision. */
+    public static function markPromptUsedForService(int $serviceId): void
+    {
+        try {
+            if (!self::promptBoxAvailable()) {
+                return;
+            }
+            \WHMCS\Module\Addon\Swarmz\PromptBox::markUsedForService($serviceId);
+        } catch (\Throwable $e) {
+            // best-effort
+        }
+    }
+
     /**
      * Apply the swarmz "0 / null = UNLIMITED" sentinel (decision D1) for the
      * capped entitlements (max_custom_domains, max_projects,

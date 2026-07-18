@@ -5,6 +5,58 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-07-18
+
+The storefront release: an embeddable **Prompt Box** that carries a visitor's
+first prompt from ANY page into their provisioned workspace, a redesigned
+client area, and SSO/transport hardening.
+
+### Added
+- **Prompt Box — capture the first prompt on the host's own site.** One
+  `<script>` tag (plain HTML, WordPress, any builder) renders a themeable,
+  dependency-free prompt widget (Shadow DOM — the host page's CSS can't break
+  it, and vice versa). A visitor types the app they want (optionally picks a
+  plan inline via `data-plans`), lands in the WHMCS cart with an opaque
+  `swzp` intent token, and when the order provisions, `CreateAccount`
+  attaches the prompt to `platform-create` as `initial_prompt` — the
+  customer's **first login opens the editor with that app already
+  building** (requires platform API 2026-07-18+; older APIs simply ignore
+  the field).
+  - New public endpoint `modules/addons/swarmz/promptbox.php`
+    (`?a=js` widget / `?a=intent` capture). Public by design: per-IP rate
+    limiting, 10k-char cap, swarmz-product allow-listing, 30-day retention.
+  - New table `mod_swarmz_prompt_intents` (created on addon
+    activate/upgrade, lazily as fallback). Checkout binding via addon hooks
+    (`ClientAreaPage` session capture → `AfterShoppingCartCheckout` +
+    `PreModuleCreate` double-binder, so instant-activation free products
+    can't outrun the bind).
+  - New **Prompt Box** view in the Reseller Console: snippet builder
+    (product / labels / theme / accent) with a live inline preview and a
+    "recently captured prompts" table showing each prompt's journey
+    (Captured → Ordered → Provisioned).
+- **Automatic transport retries.** All API calls retry cURL transport
+  failures and gateway statuses (500/502/503/504/522/524) up to 2× with
+  backoff — safe because every module-called endpoint is idempotent. A cold
+  start or deploy blip during an SSO click is now a non-event instead of
+  "Network error talking to swarmz API".
+
+### Changed
+- **Client area redesigned.** Status hero with a live-dot + animated launch
+  button (inherits the WHMCS theme's own brand color), per-pool credit cards
+  with remaining-progress bars (low-balance <13% turns the card red), grant
+  cadence chips (Daily / Monthly / One-time / Per cycle), tightened
+  typography and full mobile responsiveness. Still 100% unbranded and
+  theme-neutral (derives every tone from the surrounding theme).
+- **SSO refusals are now customer-readable.** `suspended` / `terminated` /
+  `tenant_not_found` / auth errors map to plain-language, unbranded messages
+  with a next step ("check your billing status or contact support") instead
+  of raw API vocabulary. The raw error still lands in the Module Log.
+
+### Versions
+- `lib/Api.php`: `Api::VERSION` bumped `1.8.0` → `1.9.0`; Reseller Console
+  addon `version` bumped to `1.9.0` (adds `swarmz_upgrade` to create the
+  prompt-intents table on in-place updates).
+
 ## [1.8.0] - 2026-07-12
 
 Grant-cadence display pass: the client area now shows every credit pool the

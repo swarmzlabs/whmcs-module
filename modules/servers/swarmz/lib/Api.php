@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.8.0';
+    const VERSION = '1.9.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -34,6 +34,23 @@ class Api
 
     /** Default connection timeout. */
     const CONNECT_TIMEOUT_SECONDS = 10;
+
+    /**
+     * Transient-failure retries (v1.9.0). Every platform endpoint this module
+     * calls is idempotent server-side (create keys on external_ref, suspend/
+     * terminate are idempotent-by-state, sso/usage are reads or fresh mints),
+     * so retrying a request that never produced a definitive answer is always
+     * safe. We retry ONLY:
+     *   - cURL transport failures (DNS blip, TLS reset, timeout), and
+     *   - 5xx / edge-gateway statuses (502/503/504/522/524) — cold starts and
+     *     brief platform deploys.
+     * Definitive 4xx answers are NEVER retried. This is what turns a one-in-a-
+     * hundred "Network error talking to swarmz API" SSO click into a non-event.
+     */
+    const MAX_RETRIES = 2;
+
+    /** Base backoff between retries (milliseconds); doubles per attempt. */
+    const RETRY_BACKOFF_MS = 300;
 
     /** @var string Base URL without trailing slash. */
     private $baseUrl;
@@ -242,7 +259,7 @@ class Api
     }
 
     /**
-     * Perform the cURL request and translate the response.
+     * Perform the request with transient-failure retries (see MAX_RETRIES).
      *
      * @param string      $method
      * @param string      $url
@@ -250,6 +267,46 @@ class Api
      * @return array{statusCode:int, body:array}
      */
     private function execute(string $method, string $url, $body): array
+    {
+        $lastException = null;
+
+        for ($attempt = 0; $attempt <= self::MAX_RETRIES; $attempt++) {
+            if ($attempt > 0) {
+                // 300ms, 600ms — long enough to ride out a cold start or a
+                // deploy blip, short enough that an SSO click still feels
+                // instant when the retry succeeds.
+                usleep(self::RETRY_BACKOFF_MS * 1000 * $attempt);
+            }
+            try {
+                return $this->executeOnce($method, $url, $body);
+            } catch (SwarmzTransportException $e) {
+                // Transport-level fault (cURL error / non-JSON body) — retry.
+                $lastException = $e;
+            } catch (SwarmzApiException $e) {
+                $status = $e->getStatusCode();
+                // Gateway/overload statuses are transient; anything else is a
+                // definitive answer and must surface immediately.
+                if (in_array($status, [500, 502, 503, 504, 522, 524], true)) {
+                    $lastException = $e;
+                } else {
+                    throw $e;
+                }
+            }
+        }
+
+        throw $lastException;
+    }
+
+    /**
+     * One cURL round-trip, translated. Split out of execute() so the retry
+     * loop above stays readable.
+     *
+     * @param string      $method
+     * @param string      $url
+     * @param string|null $body JSON-encoded body or null
+     * @return array{statusCode:int, body:array}
+     */
+    private function executeOnce(string $method, string $url, $body): array
     {
         $ch = curl_init();
 

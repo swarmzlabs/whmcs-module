@@ -32,6 +32,8 @@ if (is_file($swarmzServerLib . '/Api.php')) {
     require_once $swarmzServerLib . '/Helpers.php';
 }
 
+require_once __DIR__ . '/PromptBox.php';
+
 class Console
 {
     /** Custom-field name the provisioning module writes the tenant id to. */
@@ -97,6 +99,15 @@ class Console
         // need the usage round-trip the dashboard does.
         if ($action === 'plans') {
             $out .= $this->renderPlans();
+            $out .= '</div>';
+            return $out;
+        }
+
+        // Dedicated "Prompt Box" view — the embeddable storefront widget:
+        // snippet builder + live preview + recently captured prompts. Fully
+        // local (WHMCS DB only), no Swarmz API round-trip needed.
+        if ($action === 'promptbox') {
+            $out .= $this->renderPromptBox();
             $out .= '</div>';
             return $out;
         }
@@ -349,9 +360,10 @@ class Console
         }
         $refresh = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period])) . '">&#x21bb; Refresh</a>';
         $plans = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'plans'])) . '">Plans</a>';
+        $promptBox = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">Prompt Box</a>';
         $test = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period, 'swarmz_action' => 'testconn'])) . '">Test connection</a>';
 
-        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $refresh . $test . '</div></div>';
+        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $promptBox . $refresh . $test . '</div></div>';
     }
 
     private function renderTestConnection(string $period): string
@@ -453,6 +465,170 @@ class Console
     }
 
     /** Format a numeric plan field; null/blank → "—". */
+    /**
+     * "Prompt Box" view — everything a host needs to put a prompt box on
+     * their storefront: a snippet builder (live-updating embed code + inline
+     * preview), how-it-works copy, and the recently captured prompts with
+     * their journey (captured → in cart → provisioned).
+     */
+    private function renderPromptBox(): string
+    {
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '</div></div>';
+
+        $systemUrl = rtrim(PromptBox::systemUrl(), '/');
+        $jsUrl = $systemUrl . '/modules/addons/swarmz/promptbox.php?a=js';
+
+        $out = $back;
+        $out .= '<h3 class="swz-section-title">Prompt Box &mdash; capture the first prompt on YOUR site</h3>';
+        $out .= '<p class="swz-muted" style="margin:0 0 14px;max-width:760px;">Paste one <code>&lt;script&gt;</code> tag '
+            . 'on any page (plain HTML, WordPress, any builder). Visitors type the app they want, pick a plan, and land '
+            . 'in your WHMCS cart &mdash; the prompt rides along automatically. When the order provisions, their workspace '
+            . 'opens on their very first login with that app <strong>already building</strong>.</p>';
+
+        $products = PromptBox::swarmzProducts();
+        $visible = array_values(array_filter($products, function ($p) {
+            return empty($p['hidden']);
+        }));
+        if (empty($products)) {
+            $out .= $this->notice('warning',
+                'No products use the Swarmz provisioning module yet. Create a product (Products/Services), set its '
+                . 'Module to <strong>Swarmz</strong> and pick a plan, then come back here to generate your embed code.'
+            );
+            return $out;
+        }
+        $pool = !empty($visible) ? $visible : $products;
+
+        // ---- Snippet builder (pure client-side JS; nothing stored) ----
+        $productOptions = '';
+        foreach ($pool as $p) {
+            $productOptions .= '<option value="' . (int) $p['pid'] . '">'
+                . $this->esc($p['name']) . ' [#' . (int) $p['pid'] . ']</option>';
+        }
+
+        $out .= '<div class="swz-cards" style="grid-template-columns:1fr;max-width:860px;">';
+        $out .= '<div class="swz-card">';
+        $out .= '<div class="swz-strong" style="margin-bottom:10px;">1 &middot; Configure</div>';
+        $out .= '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">'
+            . '<label style="font-size:12px;color:#6b7280;">Product<br>'
+            . '<select id="swzpb-pid" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;">'
+            . $productOptions . '</select></label>'
+            . '<label style="font-size:12px;color:#6b7280;">Button label<br>'
+            . '<input id="swzpb-button" type="text" value="Start building" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;"></label>'
+            . '<label style="font-size:12px;color:#6b7280;">Placeholder<br>'
+            . '<input id="swzpb-placeholder" type="text" value="Describe the app you want to build&hellip;" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;"></label>'
+            . '<label style="font-size:12px;color:#6b7280;">Theme<br>'
+            . '<select id="swzpb-theme" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;">'
+            . '<option value="auto">Auto (match visitor)</option><option value="light">Light</option><option value="dark">Dark</option>'
+            . '</select></label>'
+            . '<label style="font-size:12px;color:#6b7280;">Accent color<br>'
+            . '<input id="swzpb-accent" type="color" value="#4f46e5" style="width:100%;margin-top:4px;padding:2px;border:1px solid #d1d5db;border-radius:6px;height:34px;"></label>'
+            . '</div>';
+        $out .= '<p class="swz-muted" style="margin:10px 0 0;">Optional: offer several plans inline by adding a '
+            . '<code>data-plans</code> attribute &mdash; see the snippet comment. Each entry maps a label (and display '
+            . 'price) to one of your WHMCS product ids.</p>';
+        $out .= '</div>';
+
+        $out .= '<div class="swz-card">';
+        $out .= '<div class="swz-strong" style="margin-bottom:10px;">2 &middot; Copy the embed code</div>';
+        $out .= '<pre id="swzpb-snippet" style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12px;'
+            . 'line-height:1.6;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>';
+        $out .= '<div style="margin-top:10px;"><a class="swz-btn" href="#" id="swzpb-copy">Copy to clipboard</a> '
+            . '<span id="swzpb-copied" class="swz-muted" style="display:none;">Copied &check;</span></div>';
+        $out .= '</div>';
+
+        $out .= '<div class="swz-card">';
+        $out .= '<div class="swz-strong" style="margin-bottom:10px;">3 &middot; Preview</div>';
+        $out .= '<p class="swz-muted" style="margin:0 0 10px;">Live &mdash; exactly what your visitors will see. '
+            . 'Submitting here really adds to the cart.</p>';
+        $out .= '<div id="swzpb-preview"></div>';
+        $out .= '</div>';
+        $out .= '</div>';
+
+        // Builder JS: rebuild the snippet text + preview on any input change.
+        $jsUrlJson = json_encode($jsUrl, JSON_UNESCAPED_SLASHES);
+        $out .= '<script>(function(){'
+            . 'var jsUrl=' . $jsUrlJson . ';'
+            . 'function esc(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;");}'
+            . 'function read(){return {'
+            . 'pid:document.getElementById("swzpb-pid").value,'
+            . 'button:document.getElementById("swzpb-button").value,'
+            . 'placeholder:document.getElementById("swzpb-placeholder").value,'
+            . 'theme:document.getElementById("swzpb-theme").value,'
+            . 'accent:document.getElementById("swzpb-accent").value};}'
+            . 'function snippet(c){return "<!-- Prompt Box — paste where the box should appear. -->\n"'
+            . '+"<!-- Multiple plans? add: data-plans=\'[{\\"pid\\":"+c.pid+",\\"label\\":\\"Starter\\",\\"price\\":\\"$9/mo\\"}]\' -->\n"'
+            . '+"<script src=\""+jsUrl+"\"\n"'
+            . '+"        data-pid=\""+c.pid+"\"\n"'
+            . '+"        data-button=\""+esc(c.button)+"\"\n"'
+            . '+"        data-placeholder=\""+esc(c.placeholder)+"\"\n"'
+            . '+"        data-theme=\""+c.theme+"\"\n"'
+            . '+"        data-accent=\""+c.accent+"\"\n"'
+            . '+"        async><\/script>";}'
+            . 'function render(){var c=read();'
+            . 'document.getElementById("swzpb-snippet").textContent=snippet(c);'
+            . 'var pv=document.getElementById("swzpb-preview");pv.innerHTML="";'
+            . 'var s=document.createElement("script");s.src=jsUrl+"&_="+Date.now();'
+            . 's.setAttribute("data-pid",c.pid);s.setAttribute("data-button",c.button);'
+            . 's.setAttribute("data-placeholder",c.placeholder);s.setAttribute("data-theme",c.theme);'
+            . 's.setAttribute("data-accent",c.accent);s.setAttribute("data-target","#swzpb-preview");s.async=true;'
+            . 'pv.appendChild(s);}'
+            . '["swzpb-pid","swzpb-button","swzpb-placeholder","swzpb-theme","swzpb-accent"].forEach(function(id){'
+            . 'document.getElementById(id).addEventListener("change",render);'
+            . 'document.getElementById(id).addEventListener("input",render);});'
+            . 'document.getElementById("swzpb-copy").addEventListener("click",function(ev){ev.preventDefault();'
+            . 'var t=document.getElementById("swzpb-snippet").textContent;'
+            . 'if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t);}'
+            . 'else{var ta=document.createElement("textarea");ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);}'
+            . 'var ok=document.getElementById("swzpb-copied");ok.style.display="inline";setTimeout(function(){ok.style.display="none";},1600);});'
+            . 'render();'
+            . '})();</script>';
+
+        // ---- Recently captured prompts ----
+        $out .= '<h3 class="swz-section-title">Recently captured prompts</h3>';
+        $intents = PromptBox::recentIntents(20);
+        if (empty($intents)) {
+            $out .= '<p class="swz-muted">None yet &mdash; embed the widget and the prompts your visitors submit will show up here.</p>';
+        } else {
+            $productNames = [];
+            foreach ($products as $p) {
+                $productNames[(int) $p['pid']] = $p['name'];
+            }
+            $rows = '';
+            foreach ($intents as $it) {
+                $prompt = (string) $it->prompt;
+                if (function_exists('mb_substr')) {
+                    $excerpt = mb_substr($prompt, 0, 90) . (mb_strlen($prompt) > 90 ? '…' : '');
+                } else {
+                    $excerpt = substr($prompt, 0, 90) . (strlen($prompt) > 90 ? '…' : '');
+                }
+                if (!empty($it->used_at)) {
+                    $status = '<span class="swz-badge" style="background:#16a34a;">Provisioned</span>';
+                } elseif (!empty($it->service_id)) {
+                    $status = '<span class="swz-badge" style="background:#f59e0b;">Ordered</span>';
+                } else {
+                    $status = '<span class="swz-badge" style="background:#6b7280;">Captured</span>';
+                }
+                $service = !empty($it->service_id)
+                    ? '<a href="clientsservices.php?id=' . (int) $it->service_id . '">#' . (int) $it->service_id . '</a>'
+                    : '<span class="swz-muted">&mdash;</span>';
+                $rows .= '<tr>'
+                    . '<td>' . $this->esc((string) $it->created_at) . '</td>'
+                    . '<td>' . $this->esc($productNames[(int) $it->pid] ?? ('#' . (int) $it->pid)) . '</td>'
+                    . '<td>' . $this->esc($excerpt) . '</td>'
+                    . '<td>' . $status . '</td>'
+                    . '<td>' . $service . '</td>'
+                    . '</tr>';
+            }
+            $out .= '<div class="swz-tablewrap"><table class="swz-table"><thead><tr>'
+                . '<th>Captured</th><th>Product</th><th>Prompt</th><th>Status</th><th>Service</th>'
+                . '</tr></thead><tbody>' . $rows . '</tbody></table></div>';
+        }
+
+        return $out;
+    }
+
     private function planNum($v): string
     {
         if ($v === null || $v === '') {

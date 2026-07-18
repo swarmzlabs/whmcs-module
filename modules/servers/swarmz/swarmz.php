@@ -257,6 +257,16 @@ function swarmz_CreateAccount(array $params)
             'plan_code'    => $planCode,
         ];
 
+        // Prompt-box intent (v1.9.0): a prompt the customer typed on the
+        // host's storefront, bound to this service by the addon's checkout
+        // hooks. The platform parks it on the workspace and auto-starts the
+        // first project from it on the customer's first login. Read is
+        // best-effort — no addon / no table / no intent all mean "omit".
+        $initialPrompt = Helpers::pendingPromptForService($serviceId);
+        if ($initialPrompt !== null) {
+            $body['initial_prompt'] = $initialPrompt;
+        }
+
         // Only send cycle_anchor when there is a REAL future due date.
         // resolveCycleAnchor returns '' when there is none (it never falls back
         // to today()); omitting the field entirely is cleaner than sending a
@@ -285,6 +295,12 @@ function swarmz_CreateAccount(array $params)
 
         $productId = isset($params['pid']) ? (int) $params['pid'] : null;
         Helpers::setTenantId($serviceId, $tenantId, $dashboardUrl, $productId);
+
+        // The intent made it to the platform with this provision — mark it
+        // consumed so a later re-provision can't re-send a stale prompt.
+        if ($initialPrompt !== null) {
+            Helpers::markPromptUsedForService($serviceId);
+        }
 
         return 'success';
     } catch (\Throwable $e) {
@@ -934,6 +950,24 @@ function _swarmz_freeCardView(array $usage): array
 }
 
 /**
+ * Percentage of a pool still remaining (0-100 int), or null when unknown /
+ * not meaningful (no total). Used for the client-area progress bars — computed
+ * here so the template stays arithmetic-free.
+ *
+ * @param mixed $remaining
+ * @param mixed $total
+ * @return int|null
+ */
+function _swarmz_pctOf($remaining, $total): ?int
+{
+    if (!is_numeric($remaining) || !is_numeric($total) || (float) $total <= 0) {
+        return null;
+    }
+    $pct = (int) round(((float) $remaining / (float) $total) * 100);
+    return max(0, min(100, $pct));
+}
+
+/**
  * Build a UsageUpdate result from the daily-cron usage cache when a live read
  * failed, falling back to zeros if there is no cache. Plan caps are unknown on
  * this path (no live balances), so the limits render as placeholders.
@@ -1056,6 +1090,19 @@ function swarmz_ClientArea(array $params)
     // numbers — so the template renders it without arithmetic.
     $freeCard = _swarmz_freeCardView($usage);
 
+    // Progress-bar percentages (remaining share of each pool), template-ready.
+    $freePct = null;
+    if (in_array($freeCard['kind'], ['daily', 'monthly', 'one_time'], true) && $freeCard['total'] !== null) {
+        $freePct = _swarmz_pctOf((float) str_replace(',', '', $freeCard['remaining']), (float) str_replace(',', '', (string) $freeCard['total']));
+    }
+    $monthlyRemForPct = $usage['monthlyRemaining'] ?? null;
+    if (!is_numeric($monthlyRemForPct)) {
+        $monthlyRemForPct = $usage['monthlyCredits'] ?? null;
+    }
+    $monthlyPct = _swarmz_pctOf($monthlyRemForPct, $usage['monthlyCredits'] ?? null);
+    $cloudPct = _swarmz_pctOf($usage['cloudGrantRemaining'] ?? null, $usage['cloudGrant'] ?? null);
+    $aiPct = _swarmz_pctOf($usage['aiGrantRemaining'] ?? null, $usage['aiGrant'] ?? null);
+
     return [
         'templatefile' => 'overview',
         'vars' => [
@@ -1081,6 +1128,11 @@ function swarmz_ClientArea(array $params)
             'freeKind'             => $freeCard['kind'],
             'freeRemainingFmt'     => $freeCard['remaining'],
             'freeTotalFmt'         => $freeCard['total'],
+            // Progress-bar fills (0-100 remaining share; null = no bar).
+            'freePct'              => $freePct,
+            'monthlyPct'           => $monthlyPct,
+            'cloudPct'             => $cloudPct,
+            'aiPct'                => $aiPct,
             // Legacy fields — kept for field-modified templates.
             'freeDaily'            => $usage['freeDaily']        ?? null,  // null = unlimited
             'freeDailyUsed'        => $usage['freeDailyUsed']    ?? null,
@@ -1304,12 +1356,53 @@ function _swarmz_doSso(array $params): array
             'success'  => false,
             'errorMsg' => 'Swarmz: SSO endpoint did not return a redirectTo URL.',
         ];
+    } catch (SwarmzApiException $e) {
+        _swarmz_logModuleCall('SSO.Error', $params, ['error' => $e->getMessage(), 'status' => $e->getStatusCode()], $api ? $api->maskedKey() : '');
+        return [
+            'success'  => false,
+            'errorMsg' => _swarmz_ssoFriendlyError($e),
+        ];
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('SSO.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
         return [
             'success'  => false,
             'errorMsg' => Helpers::formatError($e, $api ? $api->maskedKey() : null),
         ];
+    }
+}
+
+/**
+ * Translate a platform-sso API refusal into copy fit for the CUSTOMER's screen.
+ * The raw `{error, reason}` pair ("suspended", "tenant_not_found") is developer
+ * vocabulary; the person clicking the launch button is the host's end customer,
+ * so the message must say what to do next — and stay unbranded (no "Swarmz").
+ * The raw code still lands in the Module Log via the caller for diagnostics.
+ *
+ * @param SwarmzApiException $e
+ * @return string
+ */
+function _swarmz_ssoFriendlyError(SwarmzApiException $e): string
+{
+    switch ($e->getStatusCode()) {
+        case 404:
+            return 'Your workspace is still being set up. Please try again in a '
+                . 'minute — if this keeps happening, contact support.';
+        case 409:
+            if ($e->getErrorCode() === 'account_inactive') {
+                return 'The editor is temporarily unavailable. Please contact support.';
+            }
+            return 'Your service is currently suspended, so the editor cannot be '
+                . 'opened. Please check your billing status or contact support.';
+        case 410:
+            return 'This service has been cancelled and its workspace no longer '
+                . 'exists. Contact support if you believe this is a mistake.';
+        case 401:
+        case 403:
+            return 'The editor could not be opened due to a configuration issue '
+                . 'on our side. Please contact support.';
+        default:
+            return 'The editor could not be opened just now. Please try again — '
+                . 'if this keeps happening, contact support.';
     }
 }
 
