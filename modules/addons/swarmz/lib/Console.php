@@ -89,6 +89,18 @@ class Console
             ) . '</div>';
         }
 
+        // Admin SSO launcher (v1.11.0) — "Open workspace" from the admin
+        // service tab. Mints a fresh platform-sso redirect server-side and
+        // 302s in a new tab, mirroring the client area's `launch` action
+        // (which admins can't use: sso.php?direct requires a CLIENT session,
+        // and AdminLink only renders on the Servers config page). GET-safe:
+        // minting a short-lived redirect is idempotent and mutates nothing.
+        // On success renderAdminSso() redirects + exits; returning here means
+        // failure, so render the error inside the console shell.
+        if ($action === 'adminsso') {
+            return $out . $this->renderAdminSso() . '</div>';
+        }
+
         if ($action === 'testconn') {
             $out .= $this->renderTestConnection($period);
         }
@@ -1185,6 +1197,84 @@ class Console
     private function money(float $n): string
     {
         return '$' . number_format($n, 2);
+    }
+
+    // ------------------------------------------------------------- admin sso
+
+    /**
+     * Mint a platform-sso redirect for a service's workspace and send the
+     * admin's browser there (Location + exit). Reached from the "Open
+     * workspace" link on the admin Service Details tab
+     * (addonmodules.php?module=swarmz&swarmz_action=adminsso&serviceid=N —
+     * WHMCS core already enforces admin auth + addon access control on
+     * addonmodules.php). Key resolution mirrors the hooks: per-service server
+     * Password first, addon key as fallback. Only failures return HTML.
+     */
+    private function renderAdminSso(): string
+    {
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '</div></div>';
+        $title = '<h3 class="swz-section-title">Open workspace</h3>';
+
+        $serviceId = (int) ($_REQUEST['serviceid'] ?? 0);
+        if ($serviceId <= 0) {
+            return $back . $title . $this->notice('danger', 'Missing or invalid <code>serviceid</code>.');
+        }
+
+        $tenantId = \WHMCS\Module\Server\Swarmz\Helpers::getTenantId($serviceId);
+        if ($tenantId === null || $tenantId === '') {
+            return $back . $title . $this->notice('warning',
+                'Service #' . (int) $serviceId . ' has no Swarmz tenant yet — it is not provisioned '
+                . '(or provisioning failed). Check the service&rsquo;s Module Log.'
+            );
+        }
+
+        // Per-service key (server Password) → fall back to the console key.
+        $key = \WHMCS\Module\Server\Swarmz\Helpers::resolveServiceServerKey($serviceId);
+        if ($key === '') {
+            $key = $this->apiKey;
+        }
+        if ($key === '') {
+            return $back . $title . $this->notice('warning',
+                'No API key available — set one in this console&rsquo;s settings or on the service&rsquo;s server.'
+            );
+        }
+
+        try {
+            $api = new \WHMCS\Module\Server\Swarmz\Api($key, $this->baseUrl);
+            $body = [
+                'external_ref' => \WHMCS\Module\Server\Swarmz\Helpers::buildExternalRef($serviceId),
+                'tenant_id'    => $tenantId,
+            ];
+            $result = $api->postPlatform('platform-sso', $body);
+            $redirect = isset($result['body']['redirectTo']) ? (string) $result['body']['redirectTo'] : '';
+
+            if (function_exists('logModuleCall')) {
+                logModuleCall('swarmz', 'AdminSSO', $body, $result['body'], $result['body'], ['sk_live_', 'sk_test_', 'Bearer ', $api->maskedKey()]);
+            }
+
+            if ($redirect !== '' && preg_match('#^https://#i', $redirect)) {
+                header('Location: ' . $redirect);
+                exit;
+            }
+            return $back . $title . $this->notice('danger',
+                'The SSO endpoint did not return a redirect URL. See the Module Log entry <code>AdminSSO</code>.'
+            );
+        } catch (\WHMCS\Module\Server\Swarmz\SwarmzApiException $e) {
+            $status = $e->getStatusCode();
+            $why = $status === 409 ? 'the workspace is suspended'
+                : ($status === 410 ? 'the workspace was terminated'
+                : ($status === 401 ? 'the API key was rejected'
+                : 'the API returned HTTP ' . (int) $status));
+            return $back . $title . $this->notice('warning',
+                'Could not sign in to workspace for service #' . (int) $serviceId . ' &mdash; ' . $why . '.'
+            );
+        } catch (\Throwable $e) {
+            return $back . $title . $this->notice('danger',
+                'SSO failed: <code>' . $this->esc($this->scrub($e->getMessage())) . '</code>'
+            );
+        }
     }
 
     // ---------------------------------------------------------- credit packs

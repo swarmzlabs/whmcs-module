@@ -37,6 +37,17 @@ plan they can buy a top-up pack and keep building.
   "Buy \<credits\>" link to the addon store — only when the product actually
   has an orderable, mapped pack assigned, and worded with the host's own
   credit term.
+- **Admin SSO — "Open workspace" on the Service Details tab.** Admins viewing
+  a customer's product previously had only the unauthenticated dashboard URL
+  (the old `AdminLink` SSO button targeted `sso.php?direct`, which requires a
+  *client* session, and WHMCS renders `AdminLink` on the Servers config page
+  anyway — dead on both counts). The Service Details tab now has an **Open
+  workspace (signs you in)** button: it hits the Reseller Console's new
+  `adminsso` action, which mints a fresh `platform-sso` redirect server-side
+  and lands the admin inside the customer's workspace in a new tab. Failures
+  (suspended / terminated / bad key / not provisioned) render as plain
+  console notices; every mint is logged as `AdminSSO` in the Module Log. The
+  dashboard URL row is kept but labeled "(unauthenticated link)".
 
 ### Notes
 - Plan upgrades/downgrades need no new module code — WHMCS's native product

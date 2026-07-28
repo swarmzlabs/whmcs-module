@@ -27,10 +27,14 @@ module keeps no state of its own beyond two per-service custom fields
 All calls are **idempotent** on `external_ref = whmcs:<serviceid>`, so WHMCS
 retries never double-provision.
 
-**One-click SSO** — an "Open AI Editor" button in both the client area and the
-admin service screen calls `platform-sso` fresh on every click and redirects
-the user straight into their workspace — the host's verified custom editor
-domain when configured, otherwise the platform apex. No Swarmz login prompt.
+**One-click SSO** — an "Open AI Editor" button in the client area calls
+`platform-sso` fresh on every click and redirects the customer straight into
+their workspace — the host's verified custom editor domain when configured,
+otherwise the platform apex. No Swarmz login prompt. Since 1.11.0 the admin
+**Service Details** tab has the equivalent for staff: **Open workspace (signs
+you in)** mints an admin SSO redirect via the Reseller Console and lands the
+admin inside the customer's workspace (the dashboard URL row remains as a
+plain unauthenticated reference).
 Transient network/gateway blips are retried automatically (1.9.0), and any
 refusal (suspended, cancelled, still provisioning) surfaces as a
 plain-language, unbranded message.
