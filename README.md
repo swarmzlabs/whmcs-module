@@ -93,6 +93,31 @@ to offer several plans inline; point different entries at different WHMCS
 products. A `$0.00` product with instant activation gives the "type a prompt →
 free instance spins up building it" flow end-to-end.
 
+**Credit packs (1.11.0)** — sell extra Swarmz credits as ordinary WHMCS
+**Product Addons**, so a customer who runs out mid-build can buy more instead
+of dead-ending (even on your highest plan):
+
+1. Create a Product Addon (Setup → Products/Services → Product Addons), e.g.
+   *"1,000 Extra Credits"* — one-time or recurring, any price, **no module** on
+   the addon — and assign it to your Swarmz product(s) with *Show on Order* on.
+2. Map it in the Reseller Console → **Credit Packs** page: set the credits it
+   grants per purchase.
+3. Done. When a customer **pays** an invoice containing the addon, the module
+   posts `/platform-topup` and the credits land on their workspace — once per
+   invoice (recurring addons re-grant on every paid renewal), idempotent
+   against re-fired hooks, self-healing via a daily sweep, and metered to you
+   wholesale at assignment. Top-up credits expire after 12 months. The client
+   area shows a quiet "Buy more" link whenever the product has an orderable
+   mapped pack.
+
+**Plan upgrades** — self-serve upgrades need no extra module wiring: enable
+WHMCS's native **Upgrade/Downgrade** on your products (product → Upgrades tab,
+tick the target products). When the customer pays the prorated upgrade invoice,
+WHMCS fires `ChangePackage` and the module swaps the workspace to the new
+plan's `plan_code`; the platform prorates server-side (an upgrade grants the
+credit difference for the remaining cycle and meters you for exactly that; a
+downgrade applies caps now and takes full effect at renewal).
+
 **Connection test** — the WHMCS "Test Connection" button validates the API key
 against `platform-sso` with a non-existent tenant id (read-only, no side
 effects).

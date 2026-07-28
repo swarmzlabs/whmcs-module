@@ -111,6 +111,15 @@ class Console
             return $out;
         }
 
+        // Dedicated "Credit Packs" view — map WHMCS Product Addons to the
+        // Swarmz top-up credits they grant when paid. Fully local (mapping
+        // table + tbladdons); the grants themselves ride the InvoicePaid hook.
+        if ($action === 'creditpacks') {
+            $out .= $this->renderCreditPacks();
+            $out .= '</div>';
+            return $out;
+        }
+
         try {
             $services = $this->gatherServices();
             $usage = $this->fetchUsage($period);
@@ -359,10 +368,11 @@ class Console
         }
         $refresh = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period])) . '">&#x21bb; Refresh</a>';
         $plans = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'plans'])) . '">Plans</a>';
+        $packs = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">Credit Packs</a>';
         $promptBox = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">Prompt Box</a>';
         $test = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period, 'swarmz_action' => 'testconn'])) . '">Test connection</a>';
 
-        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $promptBox . $refresh . $test . '</div></div>';
+        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $promptBox . $refresh . $test . '</div></div>';
     }
 
     private function renderTestConnection(string $period): string
@@ -1175,6 +1185,120 @@ class Console
     private function money(float $n): string
     {
         return '$' . number_format($n, 2);
+    }
+
+    // ---------------------------------------------------------- credit packs
+
+    /**
+     * "Credit Packs" page — map WHMCS Product Addons to the Swarmz top-up
+     * credits they grant. The host creates ordinary Product Addons (no
+     * provisioning module needed), then sets the credit amount per addon
+     * here. Every PAID invoice line for a mapped addon grants once
+     * (idempotent per invoice line — recurring addons re-grant each renewal).
+     */
+    private function renderCreditPacks(): string
+    {
+        if (!class_exists('\\WHMCS\\Module\\Addon\\Swarmz\\CreditPacks')) {
+            $path = __DIR__ . '/CreditPacks.php';
+            if (is_file($path)) {
+                require_once $path;
+            }
+        }
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '</div></div>';
+        $title = '<h3 class="swz-section-title">Credit packs</h3>';
+
+        if (!class_exists('\\WHMCS\\Module\\Addon\\Swarmz\\CreditPacks')) {
+            return $back . $title . $this->notice('danger', 'CreditPacks library missing — reinstall the console addon.');
+        }
+        // Lazy schema: robust even when activate/upgrade never ran on ≥ 1.11.0.
+        CreditPacks::ensureSchema();
+
+        $saved = null;
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_packs_save'])) {
+            // WHMCS admin CSRF token (belt and braces — validate when available).
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $in = isset($_POST['swz_pack_credits']) && is_array($_POST['swz_pack_credits'])
+                ? $_POST['swz_pack_credits'] : [];
+            $count = 0;
+            foreach ($in as $addonId => $credits) {
+                $addonId = (int) $addonId;
+                $credits = (int) $credits; // blank / non-numeric / 0 → unmapped
+                CreditPacks::set($addonId, max(0, $credits));
+                $count++;
+            }
+            $saved = $count;
+        }
+
+        $intro = '<p class="swz-lede">Sell extra Swarmz credits as ordinary WHMCS '
+            . '<strong>Product Addons</strong> (Setup &rarr; Products/Services &rarr; Product Addons '
+            . '&mdash; no provisioning module needed on the addon). Map each addon to the credits it '
+            . 'grants below. When a customer <strong>pays</strong> an invoice containing a mapped addon, '
+            . 'the credits are added to their workspace automatically &mdash; once per invoice, so a '
+            . '<em>one-time</em> addon grants once and a <em>recurring</em> addon re-grants on every paid '
+            . 'renewal. Grants are idempotent (a re-fired hook can&rsquo;t double-grant), retried by the '
+            . 'daily cron if the API was unreachable, and you are metered wholesale for the credits when '
+            . 'they are assigned. Top-up credits expire 12 months after purchase.</p>';
+
+        $rows = CreditPacks::listAddons();
+        if (empty($rows)) {
+            return $back . $title . $intro . $this->notice('info',
+                'No Product Addons exist yet. Create one under <strong>Setup &rarr; Products/Services '
+                . '&rarr; Product Addons</strong> (e.g. &ldquo;1,000 Extra Credits&rdquo;, one-time, '
+                . 'assigned to your Swarmz product), then map it here.'
+            );
+        }
+
+        $body = '';
+        foreach ($rows as $r) {
+            $assigned = array_filter(array_map('trim', explode(',', $r['packages'])));
+            $orderable = $r['showorder']
+                ? '<span class="swz-badge swz-badge-ok">Orderable</span>'
+                : '<span class="swz-badge swz-badge-neutral">Hidden</span>';
+            $mapped = $r['credits'] > 0
+                ? '<span class="swz-badge swz-badge-info">' . number_format($r['credits']) . ' credits</span>'
+                : '<span class="swz-muted">&mdash;</span>';
+            $body .= '<tr>'
+                . '<td><span class="swz-strong">' . $this->esc($r['name']) . '</span>'
+                . ' <span class="swz-muted">#' . (int) $r['addon_id'] . '</span></td>'
+                . '<td>' . $this->esc($r['billingcycle'] !== '' ? ucfirst($r['billingcycle']) : 'One time') . '</td>'
+                . '<td>' . $orderable . '</td>'
+                . '<td class="swz-num">' . count($assigned) . '</td>'
+                . '<td>' . $mapped . '</td>'
+                . '<td class="swz-num"><input type="number" min="0" step="1" '
+                . 'name="swz_pack_credits[' . (int) $r['addon_id'] . ']" '
+                . 'value="' . ($r['credits'] > 0 ? (int) $r['credits'] : '') . '" '
+                . 'placeholder="0" style="width:110px;padding:5px 8px;border:1px solid #e5e7eb;'
+                . 'border-radius:6px;font-size:13px;text-align:right;" /></td>'
+                . '</tr>';
+        }
+
+        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $form = '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">'
+            . $token
+            . '<input type="hidden" name="swz_packs_save" value="1" />'
+            . '<div class="swz-tablewrap"><table class="swz-table">'
+            . '<thead><tr><th>Product addon</th><th>Billing cycle</th><th>Store</th>'
+            . '<th class="swz-num">Products</th><th>Mapped</th><th class="swz-num">Credits per purchase</th></tr></thead>'
+            . '<tbody>' . $body . '</tbody>'
+            . '</table></div>'
+            . '<p class="swz-note">Set <strong>0</strong> (or blank) to unmap an addon. '
+            . '&ldquo;Products&rdquo; is how many of your products the addon is assigned to &mdash; '
+            . 'the client-area &ldquo;buy more&rdquo; link only appears for customers whose product '
+            . 'has at least one orderable mapped addon assigned.</p>'
+            . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
+            . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Save mappings</button></p>'
+            . '</form>';
+
+        $notice = '';
+        if ($saved !== null) {
+            $notice = $this->notice('success', 'Mappings saved.');
+        }
+
+        return $back . $title . $intro . $notice . $form;
     }
 
     /**

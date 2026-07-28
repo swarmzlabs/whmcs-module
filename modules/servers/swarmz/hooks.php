@@ -93,6 +93,15 @@ add_hook('InvoicePaid', 1, function ($vars) {
     } catch (\Throwable $e) {
         _swarmz_hookLog('InvoicePaid.Error', ['invoiceid' => $invoiceId], ['error' => $e->getMessage()]);
     }
+    // Credit packs (v1.11.0): grant mapped Product-Addon credit packs on this
+    // paid invoice. Idempotent per (invoice, hosting-addon) — the platform
+    // dedupes on the key — and internally best-effort, so a pack grant can
+    // never break the invoice flow or the plan refresh above.
+    try {
+        Helpers::grantCreditPacksOnInvoice($invoiceId);
+    } catch (\Throwable $e) {
+        _swarmz_hookLog('InvoicePaid.CreditPacks.Error', ['invoiceid' => $invoiceId], ['error' => $e->getMessage()]);
+    }
 });
 
 // =========================================================================
@@ -178,6 +187,22 @@ function _swarmz_cron_reconcile(): void
     //      anchor strictly at the due date (never today()) so a cycle can never
     //      roll early. ──
     _swarmz_cron_refreshActiveServices($services);
+
+    // ── 5. Credit-pack safety net (v1.11.0). Re-grant mapped packs on each
+    //      active service's recent paid invoices. The platform's idempotency
+    //      key makes this a no-op for anything already granted; it only heals
+    //      grants that were missed (API blip at InvoicePaid time, or a pack
+    //      paid before the service was provisioned). ──
+    foreach ($services as $s) {
+        if (strtolower((string) $s->status) !== 'active') {
+            continue;
+        }
+        try {
+            Helpers::grantPaidCreditPacksForService((int) $s->serviceid);
+        } catch (\Throwable $e) {
+            // Best-effort; retried tomorrow.
+        }
+    }
 }
 
 /**

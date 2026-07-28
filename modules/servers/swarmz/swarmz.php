@@ -302,6 +302,18 @@ function swarmz_CreateAccount(array $params)
             Helpers::markPromptUsedForService($serviceId);
         }
 
+        // Credit-pack catch-up (v1.11.0): if the customer ordered a mapped
+        // credit-pack addon WITH this product, its invoice was usually paid
+        // BEFORE this provision stored the tenant id — so the InvoicePaid
+        // grant deferred. Now that the tenant exists, grant those packs.
+        // Idempotent (platform dedupes per invoice line) and best-effort.
+        try {
+            Helpers::grantPaidCreditPacksForService($serviceId);
+        } catch (\Throwable $e) {
+            // Never fail a successful provision over a pack grant; the daily
+            // cron sweep retries idempotently.
+        }
+
         return 'success';
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('CreateAccount.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
@@ -1159,6 +1171,10 @@ function swarmz_ClientArea(array $params)
             'editorButtonLabel' => Helpers::editorButtonLabel(),
             'creditTerm'        => Helpers::creditTerm(),
             'supportUrl'        => Helpers::supportUrl(),
+            // Credit packs (v1.11.0): the addon-store link, or '' when the host
+            // has no mapped, orderable pack assigned to this product. The
+            // template renders a quiet "buy more" link only when non-empty.
+            'buyCreditsUrl'     => Helpers::creditPackStoreUrl($serviceId),
         ],
     ];
 }
