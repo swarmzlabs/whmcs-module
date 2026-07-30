@@ -71,7 +71,7 @@ class Console
         $out .= '<div class="swarmz-console">';
         $out .= '<div class="swz-head">'
             . '<h2 class="swz-title">Swarmz Reseller Console</h2>'
-            . '<p class="swz-sub">Who&rsquo;s on which plan, their live credit balances, and your wholesale cost from Swarmz.</p>'
+            . '<p class="swz-sub">Your customers, what they&rsquo;re using, and what it costs you.</p>'
             . '</div>';
 
         if (!$this->serverLibAvailable) {
@@ -138,6 +138,15 @@ class Console
         // table + tbladdons); the grants themselves ride the InvoicePaid hook.
         if ($action === 'creditpacks') {
             $out .= $this->renderCreditPacks();
+            $out .= '</div>';
+            return $out;
+        }
+
+        // Dedicated "Appearance" view — the customer-panel theme, color
+        // scheme, and accent. Stored in tbladdonmodules (same rows the old
+        // module-settings fields used), so existing choices carry over.
+        if ($action === 'appearance') {
+            $out .= $this->renderAppearance();
             $out .= '</div>';
             return $out;
         }
@@ -392,11 +401,12 @@ class Console
         $refresh = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period])) . '">&#x21bb; Refresh</a>';
         $plans = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'plans'])) . '">Plans</a>';
         $packs = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">Credit Packs</a>';
+        $appearance = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'appearance'])) . '">Appearance</a>';
         $promptBox = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">Prompt Box</a>';
         $updates = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'update'])) . '">Updates</a>';
         $test = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period, 'swarmz_action' => 'testconn'])) . '">Test connection</a>';
 
-        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $promptBox . $updates . $refresh . $test . '</div></div>';
+        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $appearance . $promptBox . $updates . $refresh . $test . '</div></div>';
     }
 
     private function renderTestConnection(string $period): string
@@ -778,19 +788,17 @@ class Console
         $sum = $this->sumLaneCredits($usage);
 
         return '<div class="swz-section">'
-            . '<h3 class="swz-section-title">Credit usage &middot; current cycle</h3>'
-            . '<p class="swz-section-sub">Live balances summed across all customer workspaces &mdash; each lane reads '
-            . '<strong>used of granted</strong> for the current billing cycle. The period tabs above scope the '
-            . 'costs below, not these balances.</p>'
+            . '<h3 class="swz-section-title">Balances right now</h3>'
+            . '<p class="swz-section-sub">All customer workspaces together, this billing cycle &mdash; each number reads used of granted. The tabs above change the cost figures below, not these.</p>'
             . '<div class="swz-cards">'
             . $this->statCard('Active workspaces', $this->esc((string) $active),
-                'Services in WHMCS with status Active.')
+                'Active services in WHMCS.')
             . $this->statCard('Build credits', $this->summaryLane($sum['buildUsed'], $sum['buildTotal']),
-                'Consumed vs the included grant this cycle. Rollover &amp; top-ups still available are listed per customer below.')
+                'Used of included this cycle. Per-customer detail below.')
             . $this->statCard('Cloud credits', $this->summaryLane($sum['cloudUsed'], $sum['cloudTotal']),
-                'Consumed vs the plans&rsquo; cloud-credit grant this cycle.')
+                'Used of the plans&rsquo; cloud grant.')
             . $this->statCard('AI credits', $this->summaryLane($sum['aiUsed'], $sum['aiTotal']),
-                'Consumed vs the plans&rsquo; AI-credit grant this cycle.')
+                'Used of the plans&rsquo; AI grant.')
             . '</div></div>';
     }
 
@@ -872,9 +880,8 @@ class Console
             (isset($usage['period']) && is_array($usage['period'])) ? $usage['period'] : [],
             'this period'
         );
-        $head = '<h3 class="swz-section-title">Your wholesale cost &middot; ' . $this->esc($periodLabel) . '</h3>'
-            . '<p class="swz-section-sub">What Swarmz bills <strong>you</strong> for the selected period &mdash; '
-            . 'set your retail price in WHMCS product pricing.</p>';
+        $head = '<h3 class="swz-section-title">Your cost &middot; ' . $this->esc($periodLabel) . '</h3>'
+            . '<p class="swz-section-sub">What Swarmz charges you. Your own retail prices live in WHMCS.</p>';
 
         if ($billing['available'] && !empty($billing['body'])) {
             $b = $billing['body'];
@@ -894,15 +901,15 @@ class Console
 
             $html = '<div class="swz-section">' . $head . '<div class="swz-cards">'
                 . $this->statCard('Wholesale total', $this->esc($this->money($consumedUsd + $cloudUsd)),
-                    'AI spend + cloud spend &mdash; your cost from Swarmz.')
+                    'AI + cloud together.')
                 . $this->statCard('AI spend', $this->esc($this->money($consumedUsd)),
-                    'USD consumed by AI usage.')
+                    'Spent on AI.')
                 . $this->statCard('Cloud spend', $this->esc($this->money($cloudUsd)),
-                    'USD consumed by cloud compute.')
+                    'Spent on cloud compute.')
                 . $this->statCard('Upcoming invoice', $upcomingLabel,
-                    'What Swarmz will charge you next.')
+                    'Your next Swarmz invoice, so far.')
                 . $this->statCard('Credits consumed', $this->esc(number_format($consumedCredits)),
-                    'Build credits burned in the selected period.')
+                    'Build credits used in this period.')
                 . '</div>';
 
             // Recent invoices, if present.
@@ -924,26 +931,24 @@ class Console
         $capInfo = $this->aggregateCloudCap($services, $usage);
 
         $cloudValue = $this->esc($this->money($cloudUsd));
-        $cloudCaption = 'USD consumed by cloud compute.';
+        $cloudCaption = 'Spent on cloud compute.';
         if ($capInfo['cap'] > 0) {
             $cloudValue .= ' <span class="swz-of">of ' . $this->esc($this->money($capInfo['cap'])) . ' cap</span>';
-            $cloudCaption = 'USD consumed by cloud compute, vs the total cap on your active plans.';
+            $cloudCaption = 'Spent on cloud compute, against your plans&rsquo; total cap.';
         }
 
         $html = '<div class="swz-section">' . $head . '<div class="swz-cards">'
             . $this->statCard('Wholesale total', $this->esc($this->money($consumedUsd + $cloudUsd)),
-                'AI spend + cloud spend &mdash; your cost from Swarmz for this period.')
+                'AI + cloud together.')
             . $this->statCard('AI spend', $this->esc($this->money($consumedUsd)),
-                'USD consumed by AI usage.')
+                'Spent on AI.')
             . $this->statCard('Cloud spend', $cloudValue, $cloudCaption)
             . $this->statCard('Credits consumed', $this->esc(number_format($consumedCredits)),
-                'Build credits burned in the selected period.')
+                'Build credits used in this period.')
             . '</div>';
 
         // Compact footnote: why purchased/rollover/upcoming aren't shown here.
-        $html .= '<p class="swz-note">Purchased credits, rollover balance and the upcoming invoice are tied to your '
-            . 'Swarmz <strong>owner sign-in</strong>, so they live on the Swarmz billing page and can&rsquo;t be read '
-            . 'with the reseller API key. Everything above is live consumption for the selected period.</p>';
+        $html .= '<p class="swz-note">Your own purchases, rollover and the upcoming invoice need your owner sign-in &mdash; find them on the Swarmz billing page.</p>';
 
         return $html . '</div>';
     }
@@ -1074,9 +1079,7 @@ class Console
 
         return '<div class="swz-section">'
             . '<h3 class="swz-section-title">Customers</h3>'
-            . '<p class="swz-section-sub">Credit lanes read <strong>used / included</strong> for the current cycle; '
-            . 'the build lane also lists any rollover and top-up credits still available. A dash means the workspace '
-            . 'reported no live balance for that lane.</p>'
+            . '<p class="swz-section-sub">Per customer, this cycle &mdash; used / included. The build column also shows rollover and top-ups still available; a dash means no live balance.</p>'
             . '<div class="swz-tablewrap"><table class="swz-table">'
             . '<thead><tr>'
             . '<th>Customer</th><th>Plan</th><th>Status</th><th>Tenant</th>'
@@ -1578,6 +1581,126 @@ class Console
     }
 
     /**
+     * Persist one console-managed addon setting (same storage the WHMCS
+     * module-settings form uses), so Helpers::addonSetting() keeps reading it.
+     */
+    private function saveAddonSetting(string $key, string $value): void
+    {
+        try {
+            \WHMCS\Database\Capsule::table('tbladdonmodules')->updateOrInsert(
+                ['module' => 'swarmz', 'setting' => $key],
+                ['value' => $value]
+            );
+        } catch (\Throwable $e) {
+            // Surface nothing — the page re-reads and shows the real state.
+        }
+    }
+
+    /**
+     * "Appearance" page — how the customer-facing service panel looks.
+     * Theme cards with live-ish CSS previews, six accent schemes, and an
+     * optional custom hex. Saves to the same settings the template reads.
+     */
+    private function renderAppearance(): string
+    {
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '</div></div>';
+        $title = '<h3 class="swz-section-title">Appearance</h3>';
+
+        $saved = '';
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_appearance_save'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $theme = strtolower(trim((string) ($_POST['swz_theme'] ?? 'classic')));
+            if (!in_array($theme, \WHMCS\Module\Server\Swarmz\Helpers::CLIENT_THEMES, true)) {
+                $theme = 'classic';
+            }
+            $scheme = strtolower(trim((string) ($_POST['swz_scheme'] ?? 'theme')));
+            if ($scheme !== 'theme' && !isset(\WHMCS\Module\Server\Swarmz\Helpers::ACCENT_SCHEMES[$scheme])) {
+                $scheme = 'theme';
+            }
+            $hex = trim((string) ($_POST['swz_hex'] ?? ''));
+            $hex = preg_match('/^#?[0-9a-fA-F]{6}$/', $hex) ? ('#' . ltrim($hex, '#')) : '';
+            $this->saveAddonSetting('Client Theme', $theme);
+            $this->saveAddonSetting('Color Scheme', $scheme);
+            $this->saveAddonSetting('Accent Color', $hex);
+            $saved = $this->notice('success', 'Saved. Your customers see the new look on their next page load.');
+        }
+
+        $curTheme = \WHMCS\Module\Server\Swarmz\Helpers::clientTheme();
+        $curScheme = strtolower(trim((string) \WHMCS\Module\Server\Swarmz\Helpers::addonSetting('Color Scheme', 'theme')));
+        if ($curScheme !== 'theme' && !isset(\WHMCS\Module\Server\Swarmz\Helpers::ACCENT_SCHEMES[$curScheme])) {
+            $curScheme = 'theme';
+        }
+        $curHexRaw = trim((string) \WHMCS\Module\Server\Swarmz\Helpers::addonSetting('Accent Color', ''));
+        $curHex = preg_match('/^#?[0-9a-fA-F]{6}$/', $curHexRaw) ? ('#' . ltrim($curHexRaw, '#')) : '';
+
+        $intro = '<p class="swz-lede">How the service panel looks to <strong>your customers</strong>. '
+            . 'Pick a layout, then an accent color &mdash; changes apply instantly, no files to edit.</p>';
+
+        // Mini previews: tiny hand-drawn mocks per theme (pure inline CSS).
+        $previews = [
+            'classic' => '<div style="padding:9px;"><div style="height:22px;border:1px solid #ddd;border-radius:5px;background:#f6f6f7;margin-bottom:7px;"></div><div style="display:flex;gap:6px;">' . str_repeat('<div style="flex:1;height:44px;border:1px solid #e2e2e6;border-radius:5px;background:#fff;"></div>', 3) . '</div></div>',
+            'swarmz' => '<div style="padding:9px;"><div style="height:22px;border:1px solid #e5e5ea;border-left:3px solid #f97316;border-radius:3px;background:#fff;margin-bottom:7px;"></div><div style="display:flex;gap:6px;">' . str_repeat('<div style="flex:1;height:44px;border:1px solid #e9e9ee;border-radius:4px;background:#fff;"></div>', 3) . '</div></div>',
+            'cupertino' => '<div style="padding:9px;text-align:center;"><div style="height:26px;border-radius:9px;background:#ededf0;margin-bottom:7px;"></div><div style="display:flex;gap:7px;">' . str_repeat('<div style="flex:1;height:40px;border-radius:11px;background:#ededf0;"></div>', 2) . '</div></div>',
+            'pulse' => '<div style="padding:9px;"><div style="height:24px;border-radius:7px;background:linear-gradient(115deg,#f97316,#c2410c);margin-bottom:7px;"></div><div style="display:flex;gap:6px;"><div style="flex:2;height:40px;border-radius:7px;background:#fff4ec;border:1px solid #fcd9bd;"></div><div style="flex:1;height:40px;border-radius:7px;background:#fff;border:1px solid #eee;"></div></div></div>',
+            'carbon' => '<div style="padding:9px;background:#101214;height:100%;"><div style="height:16px;border-bottom:1px solid #2a2e33;margin-bottom:7px;"></div>' . str_repeat('<div style="height:12px;background:#171a1d;border:1px solid #23272c;border-radius:3px;margin-bottom:5px;"></div>', 3) . '</div>',
+            'editorial' => '<div style="padding:11px 12px;"><div style="height:2px;background:#333;margin-bottom:9px;"></div><div style="display:flex;gap:12px;">' . str_repeat('<div style="flex:1;"><div style="height:5px;background:#e6e6e9;margin-bottom:7px;"></div><div style="font-family:Georgia,serif;font-size:19px;color:#444;">12</div></div>', 3) . '</div></div>',
+        ];
+        $blurbs = [
+            'classic' => 'The quiet default. Neutral cards, works with every WHMCS theme.',
+            'swarmz' => 'Flat and precise, hairline borders &mdash; like the Swarmz dashboard.',
+            'cupertino' => 'Soft and rounded, centered hero &mdash; Apple-style calm.',
+            'pulse' => 'A bold color hero and a featured balance card. High energy.',
+            'carbon' => 'A sleek dark panel with dense console rows. Very techy.',
+            'editorial' => 'No boxes at all &mdash; typographic, airy, hairline rules.',
+        ];
+
+        $cards = '';
+        foreach (\WHMCS\Module\Server\Swarmz\Helpers::CLIENT_THEMES as $t) {
+            $on = $t === $curTheme ? ' swz-on' : '';
+            $cards .= '<label class="swz-theme' . $on . '">'
+                . '<input type="radio" name="swz_theme" value="' . $this->esc($t) . '"' . ($t === $curTheme ? ' checked' : '') . ' onchange="swzSel(this)" />'
+                . '<div class="swz-prev">' . ($previews[$t] ?? '') . '</div>'
+                . '<p class="swz-theme-name">' . $this->esc(ucfirst($t)) . '</p>'
+                . '<p class="swz-theme-desc">' . ($blurbs[$t] ?? '') . '</p>'
+                . '</label>';
+        }
+
+        $schemes = ['theme' => ''] + \WHMCS\Module\Server\Swarmz\Helpers::ACCENT_SCHEMES;
+        $swatches = '';
+        foreach ($schemes as $name => $hex) {
+            $on = $name === $curScheme ? ' swz-on' : '';
+            $bg = $name === 'theme'
+                ? 'background:conic-gradient(#f97316,#3b82f6,#16a34a,#ec4899,#f97316);'
+                : 'background:' . $this->esc($hex) . ';';
+            $swatches .= '<label class="swz-swatch' . $on . '" style="' . $bg . '" title="' . $this->esc($name) . '">'
+                . '<input type="radio" name="swz_scheme" value="' . $this->esc($name) . '"' . ($name === $curScheme ? ' checked' : '') . ' onchange="swzSelSwatch(this)" />'
+                . '</label>';
+        }
+
+        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $form = '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'appearance'])) . '">'
+            . $token
+            . '<input type="hidden" name="swz_appearance_save" value="1" />'
+            . '<div class="swz-section"><h3 class="swz-section-title">Layout</h3>'
+            . '<p class="swz-section-sub">Each one is a different composition, not just colors.</p>'
+            . '<div class="swz-themes">' . $cards . '</div></div>'
+            . '<div class="swz-section"><h3 class="swz-section-title">Accent</h3>'
+            . '<p class="swz-section-sub">The rainbow dot lets each layout use its own default. Or type an exact brand color &mdash; it wins over the dots.</p>'
+            . '<div class="swz-swatches">' . $swatches
+            . '<input class="swz-hex" type="text" name="swz_hex" value="' . $this->esc($curHex) . '" placeholder="#7c3aed" maxlength="7" /></div></div>'
+            . '<button type="submit" class="swz-save">Save appearance</button>'
+            . '</form>'
+            . '<script>function swzSel(i){var n=i.closest(".swz-themes").querySelectorAll(".swz-theme");for(var k=0;k<n.length;k++){n[k].classList.remove("swz-on");}i.closest(".swz-theme").classList.add("swz-on");}'
+            . 'function swzSelSwatch(i){var n=i.closest(".swz-swatches").querySelectorAll(".swz-swatch");for(var k=0;k<n.length;k++){n[k].classList.remove("swz-on");}i.closest(".swz-swatch").classList.add("swz-on");}</script>';
+
+        return $back . $title . $intro . $saved . $form;
+    }
+
+    /**
      * Money with an explicit currency. USD renders with the $ prefix; any other
      * currency is suffixed with its ISO code (e.g. "12.00 EUR") so we never
      * imply USD for a non-USD figure.
@@ -1614,50 +1737,66 @@ class Console
     private function styles(): string
     {
         return '<style>
-.swarmz-console{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2937;}
-.swarmz-console a{color:#4f46e5;text-decoration:none;}
-.swarmz-console a:hover{text-decoration:underline;}
-.swarmz-console .swz-head{margin:2px 0 0;}
-.swarmz-console .swz-title{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em;color:#111827;}
-.swarmz-console .swz-sub{margin:4px 0 0;color:#6b7280;font-size:13px;max-width:720px;line-height:1.5;}
-.swarmz-console .swz-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:18px 0 22px;}
-.swarmz-console .swz-tabs{display:inline-flex;border:1px solid #e5e7eb;border-radius:7px;overflow:hidden;background:#fff;}
-.swarmz-console .swz-tab{padding:6px 14px;font-size:13px;color:#4b5563;text-decoration:none;border-right:1px solid #e5e7eb;}
-.swarmz-console .swz-tab:last-child{border-right:none;}
-.swarmz-console .swz-tab:hover{background:#fafafa;text-decoration:none;color:#111827;}
-.swarmz-console .swz-tab-active,.swarmz-console .swz-tab-active:hover{background:#4f46e5;color:#fff;font-weight:600;}
-.swarmz-console .swz-actions{display:inline-flex;gap:8px;flex-wrap:wrap;}
-.swarmz-console .swz-btn{display:inline-block;padding:6px 12px;border:1px solid #e5e7eb;border-radius:7px;background:#fff;color:#374151;text-decoration:none;font-size:13px;}
-.swarmz-console .swz-btn:hover{border-color:#d1d5db;background:#fafafa;color:#111827;text-decoration:none;}
+/* Reseller Console — airy, flat, hairline; Swarmz orange accent. */
+.swarmz-console{--acc:#f97316;--ink:#16181d;--mut:#6b7280;--dim:#9aa1ab;--line:#ececf0;--line2:#e2e4e9;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);}
+.swarmz-console a{color:var(--acc);text-decoration:none;}
+.swarmz-console a:hover{opacity:.8;text-decoration:none;}
+.swarmz-console .swz-head{margin:6px 0 0;}
+.swarmz-console .swz-title{display:none;}
+.swarmz-console .swz-sub{margin:0;color:var(--mut);font-size:13px;max-width:720px;line-height:1.5;}
+.swarmz-console .swz-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:16px 0 30px;}
+.swarmz-console .swz-tabs{display:inline-flex;gap:2px;background:#f2f3f5;border-radius:9px;padding:3px;}
+.swarmz-console .swz-tab{padding:6px 14px;font-size:12.5px;font-weight:500;color:var(--mut);text-decoration:none;border-radius:7px;}
+.swarmz-console .swz-tab:hover{color:var(--ink);text-decoration:none;}
+.swarmz-console .swz-tab-active,.swarmz-console .swz-tab-active:hover{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.07);}
+.swarmz-console .swz-actions{display:inline-flex;gap:6px;flex-wrap:wrap;}
+.swarmz-console .swz-btn{display:inline-block;padding:6px 13px;border:1px solid var(--line2);border-radius:8px;background:#fff;color:#374151;text-decoration:none;font-size:12.5px;font-weight:500;}
+.swarmz-console .swz-btn:hover{border-color:#cfd3da;color:var(--ink);text-decoration:none;}
 .swarmz-console .swz-btn-sm{padding:3px 10px;font-size:12px;}
-.swarmz-console .swz-section{margin:0 0 26px;}
-.swarmz-console .swz-section-title{margin:18px 0 3px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;}
-.swarmz-console .swz-section-sub{margin:0 0 10px;color:#9ca3af;font-size:12.5px;max-width:720px;line-height:1.5;}
-.swarmz-console .swz-lede{margin:0 0 12px;color:#6b7280;font-size:13px;line-height:1.55;max-width:760px;}
-.swarmz-console .swz-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:0 0 4px;}
-.swarmz-console .swz-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;}
-.swarmz-console .swz-card-l{color:#6b7280;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
-.swarmz-console .swz-card-v{margin-top:6px;font-size:22px;font-weight:600;line-height:1.2;color:#111827;font-variant-numeric:tabular-nums;}
-.swarmz-console .swz-card-c{margin-top:5px;color:#9ca3af;font-size:12px;line-height:1.45;}
-.swarmz-console .swz-of{color:#9ca3af;font-size:14px;font-weight:400;}
-.swarmz-console .swz-tablewrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:8px;background:#fff;}
+.swarmz-console .swz-section{margin:0 0 36px;}
+.swarmz-console .swz-section-title{margin:0 0 2px;font-size:11.5px;font-weight:650;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;}
+.swarmz-console .swz-section-sub{margin:0 0 14px;color:var(--dim);font-size:12.5px;max-width:720px;line-height:1.5;}
+.swarmz-console .swz-lede{margin:0 0 16px;color:var(--mut);font-size:13px;line-height:1.6;max-width:760px;}
+.swarmz-console .swz-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:0 34px;margin:0 0 4px;}
+.swarmz-console .swz-card{background:transparent;border:0;border-top:2px solid var(--line2);border-radius:0;padding:12px 0 6px;}
+.swarmz-console .swz-card-l{color:var(--dim);font-size:11px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;}
+.swarmz-console .swz-card-v{margin-top:7px;font-size:24px;font-weight:650;line-height:1.15;color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:-.01em;}
+.swarmz-console .swz-card-c{margin-top:5px;color:var(--dim);font-size:12px;line-height:1.45;}
+.swarmz-console .swz-of{color:var(--dim);font-size:14px;font-weight:400;}
+.swarmz-console .swz-tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:#fff;}
 .swarmz-console .swz-table{width:100%;border-collapse:collapse;font-size:13px;}
-.swarmz-console .swz-table th,.swarmz-console .swz-table td{padding:9px 12px;border-bottom:1px solid #f3f4f6;text-align:left;vertical-align:top;}
-.swarmz-console .swz-table thead th{background:#fafafa;color:#6b7280;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e5e7eb;}
+.swarmz-console .swz-table th,.swarmz-console .swz-table td{padding:10px 14px;border-bottom:1px solid #f4f5f7;text-align:left;vertical-align:top;}
+.swarmz-console .swz-table thead th{background:#fff;color:var(--dim);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line);}
 .swarmz-console .swz-table tbody tr:last-child td{border-bottom:none;}
-.swarmz-console .swz-table tbody tr:hover td{background:#fafafa;}
+.swarmz-console .swz-table tbody tr:hover td{background:#fafafb;}
 .swarmz-console .swz-num{text-align:right;font-variant-numeric:tabular-nums;}
-.swarmz-console .swz-strong{font-weight:600;color:#111827;}
-.swarmz-console .swz-muted{color:#9ca3af;font-size:12px;}
+.swarmz-console .swz-strong{font-weight:600;color:var(--ink);}
+.swarmz-console .swz-muted{color:var(--dim);font-size:12px;}
 .swarmz-console .swz-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid transparent;}
 .swarmz-console .swz-badge-ok{background:#f0fdf4;color:#15803d;border-color:#dcfce7;}
 .swarmz-console .swz-badge-warn{background:#fffbeb;color:#b45309;border-color:#fef3c7;}
 .swarmz-console .swz-badge-bad{background:#fef2f2;color:#b91c1c;border-color:#fee2e2;}
-.swarmz-console .swz-badge-info{background:#eef2ff;color:#4338ca;border-color:#e0e7ff;}
+.swarmz-console .swz-badge-info{background:#fff7ed;color:#c2410c;border-color:#ffedd5;}
 .swarmz-console .swz-badge-neutral{background:#f3f4f6;color:#4b5563;border-color:#e5e7eb;}
-.swarmz-console .swz-notice{padding:12px 14px;border-radius:8px;margin:12px 0;font-size:13px;line-height:1.5;}
-.swarmz-console .swz-note{margin:10px 0 0;padding:2px 0 2px 12px;border-left:2px solid #e5e7eb;color:#6b7280;font-size:12.5px;line-height:1.55;max-width:680px;}
+.swarmz-console .swz-notice{padding:12px 14px;border-radius:10px;margin:12px 0;font-size:13px;line-height:1.5;}
+.swarmz-console .swz-note{margin:14px 0 0;padding:0 0 0 12px;border-left:2px solid var(--line2);color:var(--mut);font-size:12.5px;line-height:1.55;max-width:680px;}
 .swarmz-console code{background:#f3f4f6;color:#374151;padding:1px 5px;border-radius:4px;font-size:12px;}
+/* Appearance page */
+.swarmz-console .swz-themes{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin:0 0 8px;}
+.swarmz-console .swz-theme{position:relative;border:1px solid var(--line2);border-radius:12px;padding:12px;cursor:pointer;background:#fff;transition:border-color .12s ease, box-shadow .12s ease;}
+.swarmz-console .swz-theme:hover{border-color:#cfd3da;}
+.swarmz-console .swz-theme input{position:absolute;opacity:0;pointer-events:none;}
+.swarmz-console .swz-theme.swz-on{border-color:var(--acc);box-shadow:0 0 0 3px rgba(249,115,22,.14);}
+.swarmz-console .swz-theme-name{margin:10px 0 1px;font-size:13px;font-weight:650;color:var(--ink);}
+.swarmz-console .swz-theme-desc{margin:0;font-size:11.5px;color:var(--dim);line-height:1.45;}
+.swarmz-console .swz-prev{height:96px;border-radius:8px;overflow:hidden;position:relative;background:#fafafb;border:1px solid #f0f1f4;}
+.swarmz-console .swz-swatches{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0 4px;}
+.swarmz-console .swz-swatch{position:relative;width:30px;height:30px;border-radius:50%;cursor:pointer;border:2px solid #fff;box-shadow:0 0 0 1px var(--line2);}
+.swarmz-console .swz-swatch input{position:absolute;opacity:0;pointer-events:none;}
+.swarmz-console .swz-swatch.swz-on{box-shadow:0 0 0 2px var(--acc);}
+.swarmz-console .swz-hex{width:120px;padding:6px 10px;border:1px solid var(--line2);border-radius:8px;font-size:13px;font-family:ui-monospace,Menlo,monospace;}
+.swarmz-console .swz-save{display:inline-block;padding:9px 20px;border:0;border-radius:9px;background:var(--acc);color:#fff;font-size:13px;font-weight:650;cursor:pointer;}
+.swarmz-console .swz-save:hover{opacity:.9;}
 </style>';
     }
 }

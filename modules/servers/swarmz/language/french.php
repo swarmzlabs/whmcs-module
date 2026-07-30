@@ -62,4 +62,6 @@ return [
     'usage_error' => 'Impossible d’actualiser l’utilisation pour le moment :',
     'need_help' => 'Besoin d’aide ?',
     'contact_support' => 'Contacter le support',
+    'no_pools' => 'Cette formule n’inclut aucun crédit.',
+    'updates_fast' => 'Les soldes se mettent à jour quelques secondes après l’achat.',
 ];

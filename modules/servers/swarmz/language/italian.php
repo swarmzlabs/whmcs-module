@@ -62,4 +62,6 @@ return [
     'usage_error' => 'Impossibile aggiornare l’utilizzo in questo momento:',
     'need_help' => 'Serve aiuto?',
     'contact_support' => 'Contatta l’assistenza',
+    'no_pools' => 'Questo piano non include crediti.',
+    'updates_fast' => 'I saldi si aggiornano pochi secondi dopo l’acquisto.',
 ];

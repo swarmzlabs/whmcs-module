@@ -62,4 +62,6 @@ return [
     'usage_error' => 'No se pudo actualizar el uso en este momento:',
     'need_help' => '¿Necesitas ayuda?',
     'contact_support' => 'Contactar con soporte',
+    'no_pools' => 'Este plan no incluye créditos.',
+    'updates_fast' => 'Los saldos se actualizan segundos después de la compra.',
 ];

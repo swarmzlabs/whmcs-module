@@ -5,6 +5,39 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.16.0] - 2026-07-31
+
+The client panel, rebuilt properly — and appearance moves into the console.
+
+### Fixed
+- **Template comment leaked into the page.** A Smarty comment ends at the
+  first asterisk-brace pair; 1.13.0's header comment contained one, so half
+  the comment rendered as visible text on every customer panel. Gone, with
+  a render-harness check so it can never ship again.
+
+### Changed
+- **New layout bones.** Balance cards render ONLY for pools the plan (or the
+  customer) actually has — no more "Not included" placeholder boxes and
+  ragged half-empty grids. Plan limits are a slim inline strip instead of
+  giant cards. "Buy more" sits in the credits header and opens the packs
+  modal. Airier rhythm everywhere: lighter hairlines, more whitespace.
+- **Six structurally different themes** (Appearance page): Classic (quiet
+  cards), Swarmz (flat hairline dashboard), Cupertino (Apple-soft, centered
+  hero, extra-round), Pulse (color-block hero + featured first card),
+  Carbon (dark dense console rows), Editorial (boxless typographic).
+  Aurora was folded into Cupertino.
+- **Reseller Console redesign**: flat, airy, Swarmz-orange design system —
+  segmented period tabs, hairline stat tiles instead of boxes, no duplicate
+  page title — and every section rewritten in plain language ("Balances
+  right now", "Your cost", one-line captions).
+
+### Added
+- **Console → Appearance page**: pick the customer-panel layout from visual
+  preview cards, choose one of six accent schemes (or the per-theme
+  default), or type an exact brand hex. Stored in the same settings as
+  before, so existing choices carry over; the three fields are gone from
+  the WHMCS module-settings form.
+
 ## [1.15.0] - 2026-07-30
 
 The updater now protects hand-edited files.
