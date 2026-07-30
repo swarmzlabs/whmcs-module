@@ -5,6 +5,29 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.0] - 2026-07-31
+
+### Added
+- **Console: Top-up credits card** in "Balances right now" — the purchased
+  credits your customers still hold, summed across workspaces (previously
+  parsed but shown nowhere in the console).
+- **Dark-page adaptation**: the customer panel detects a dark host theme
+  (by page background, however the theme implements it) and flips the
+  packs modal + neutral tones. Works with light and dark WHMCS themes on
+  every layout; Carbon stays dark by design.
+- **Modals match the layout**: the packs popup is themed per layout —
+  hairline Swarmz, round Apple sheet for Cupertino, accent-topped Pulse,
+  dark console Carbon, serif boxless Editorial.
+
+### Changed
+- Console build-credits caption: "Used of currently assigned, this cycle."
+- **Swarmz and Cupertino layouts compacted** — smaller cards that fit four
+  to a row on desktop.
+- **A fully used one-time free allowance hides its card** instead of
+  sitting there empty forever.
+- Carbon rows use fixed columns so every credit bar starts and ends at the
+  same position.
+
 ## [1.16.2] - 2026-07-31
 
 ### Fixed

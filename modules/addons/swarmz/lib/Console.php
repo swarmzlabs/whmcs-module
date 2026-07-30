@@ -810,7 +810,9 @@ class Console
             . $this->statCard('Active workspaces', $this->esc((string) $active),
                 'Active services in WHMCS.')
             . $this->statCard('Build credits', $this->summaryLane($sum['buildUsed'], $sum['buildTotal']),
-                'Used of included this cycle. Per-customer detail below.')
+                'Used of currently assigned, this cycle.')
+            . $this->statCard('Top-up credits', $sum['topup'] > 0 ? $this->esc(number_format($sum['topup'])) : '&mdash;',
+                'Purchased credits your customers still hold.')
             . $this->statCard('Cloud credits', $this->summaryLane($sum['cloudUsed'], $sum['cloudTotal']),
                 'Used of the plans&rsquo; cloud grant.')
             . $this->statCard('AI credits', $this->summaryLane($sum['aiUsed'], $sum['aiTotal']),
@@ -845,12 +847,14 @@ class Console
             'buildUsed' => 0.0, 'buildTotal' => 0.0,
             'cloudUsed' => 0.0, 'cloudTotal' => 0.0,
             'aiUsed'    => 0.0, 'aiTotal'    => 0.0,
+            'topup'     => 0.0,
         ];
         $bal = (isset($usage['bal']) && is_array($usage['bal'])) ? $usage['bal'] : [];
         foreach ($bal as $lanes) {
             if (!is_array($lanes)) {
                 continue;
             }
+            $out['topup'] += (float) ($lanes['topupRemaining'] ?? 0);
             foreach (['build', 'cloud', 'ai'] as $lane) {
                 $total = $lanes[$lane . 'Total'] ?? null;
                 if (is_numeric($total) && (float) $total > 0) {
