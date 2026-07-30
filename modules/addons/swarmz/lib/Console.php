@@ -1271,8 +1271,8 @@ class Console
         );
 
         if (!empty($info['notes'])) {
-            $out .= '<div class="swz-tablewrap" style="padding:14px 16px;white-space:pre-wrap;font-size:12.5px;line-height:1.55;max-height:320px;overflow:auto;">'
-                . $this->esc((string) $info['notes']) . '</div>';
+            $out .= '<div class="swz-tablewrap" style="padding:16px 18px;font-size:12.5px;line-height:1.6;max-height:340px;overflow:auto;">'
+                . $this->mdNotes((string) $info['notes']) . '</div>';
         }
 
         // Preflight — every row must be green before the button does anything.
@@ -1578,6 +1578,62 @@ class Console
         }
 
         return $back . $title . $intro . $notice . $form;
+    }
+
+    /**
+     * Render GitHub release notes as HTML — the tiny, SAFE subset the release
+     * template actually uses. The whole text is HTML-escaped FIRST; only then
+     * are markdown patterns rewritten, so no tag in the notes can survive:
+     * bullet lists, headings, bold, inline code, and https links.
+     */
+    private function mdNotes(string $md): string
+    {
+        $md = str_replace(["\r\n", "\r"], "\n", $md);
+        $out = '';
+        $inList = false;
+        foreach (explode("\n", $md) as $line) {
+            $t = rtrim($line);
+            $isItem = (bool) preg_match('/^\s*[-*]\s+/', $t);
+            if ($inList && !$isItem) {
+                $out .= '</ul>';
+                $inList = false;
+            }
+            if (trim($t) === '') {
+                continue;
+            }
+            if ($isItem) {
+                if (!$inList) {
+                    $out .= '<ul style="margin:6px 0 10px;padding-left:20px;">';
+                    $inList = true;
+                }
+                $out .= '<li style="margin:3px 0;">' . $this->mdInline(preg_replace('/^\s*[-*]\s+/', '', $t)) . '</li>';
+                continue;
+            }
+            if (preg_match('/^#{1,4}\s+(.*)$/', $t, $m)) {
+                $out .= '<p style="margin:12px 0 4px;font-weight:650;">' . $this->mdInline($m[1]) . '</p>';
+                continue;
+            }
+            $out .= '<p style="margin:6px 0;">' . $this->mdInline($t) . '</p>';
+        }
+        if ($inList) {
+            $out .= '</ul>';
+        }
+        return $out;
+    }
+
+    /** Inline markdown on ONE escaped line: bold, code, bare https links. */
+    private function mdInline(string $t): string
+    {
+        $t = $this->esc($t);
+        $t = preg_replace('/\*\*(.+?)\*\*/s', '<strong>$1</strong>', $t);
+        $t = preg_replace('/`([^`]+)`/', '<code>$1</code>', $t);
+        // [label](https://…) — escaped text, so parens/brackets are literal.
+        $t = preg_replace(
+            '/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/',
+            '<a href="$2" target="_blank" rel="noopener">$1</a>',
+            $t
+        );
+        return $t;
     }
 
     /**
