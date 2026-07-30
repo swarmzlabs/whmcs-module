@@ -5,6 +5,29 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] - 2026-07-30
+
+Update the module without leaving WHMCS.
+
+### Added
+- **In-admin updater.** The Reseller Console now shows a banner when a newer
+  release is available (checks the official GitHub releases feed, cached for
+  6 hours) and a new **Updates** page installs it in one click: download over
+  verified TLS from the pinned repository, SHA-256 checksum verification
+  against the digest GitHub publishes for the asset, a full path-allowlist
+  scan of the archive, an automatic backup of both module directories, then
+  an add/overwrite-only overlay. Nothing runs automatically — the install is
+  an explicit, CSRF-protected admin action, and every environment
+  precondition is shown on the page before the button is enabled. Settings,
+  mappings, and customer data are untouched, exactly as with a manual ZIP
+  upload.
+
+### Changed
+- **AGENTS.md** rewritten as a public engineering-standards document (the
+  repository is read by the partners who run the module), now including the
+  updater's non-negotiable security rules and the release discipline it
+  depends on.
+
 ## [1.13.0] - 2026-07-30
 
 Client-area revamp: themes, colors, translations, a packs modal, and the
