@@ -468,7 +468,20 @@ class Helpers
                 $base = $loaded;
             }
         }
-        $lang = strtolower(trim((string) ($params['clientsdetails']['language'] ?? '')));
+        // Resolution order matters: the client-area language SWITCHER stores
+        // its choice in the WHMCS session only — the profile language stays
+        // whatever it was. Reading just clientsdetails.language left the
+        // panel in English after a switch (found live, 2026-07-31).
+        $lang = '';
+        foreach (['Language', 'language'] as $sessKey) {
+            if (isset($_SESSION[$sessKey]) && is_string($_SESSION[$sessKey]) && $_SESSION[$sessKey] !== '') {
+                $lang = strtolower(trim($_SESSION[$sessKey]));
+                break;
+            }
+        }
+        if ($lang === '') {
+            $lang = strtolower(trim((string) ($params['clientsdetails']['language'] ?? '')));
+        }
         if ($lang === '' && isset($GLOBALS['CONFIG']['Language'])) {
             $lang = strtolower(trim((string) $GLOBALS['CONFIG']['Language']));
         }

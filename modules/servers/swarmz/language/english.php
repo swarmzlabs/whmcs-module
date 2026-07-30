@@ -60,7 +60,8 @@ return [
     'topup_used'      => '%s used so far',
 
     // Plan cards
-    'published_apps'  => 'Published apps',
+    'published_projects' => 'Published projects',
+    'of' => 'of',
     'live_now'        => 'Live right now',
     'allowed_at_once' => 'Allowed at once',
     'custom_domains'  => 'Custom domains',

@@ -5,6 +5,18 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.1] - 2026-07-31
+
+### Fixed
+- **Language switcher now respected.** The client-area language dropdown
+  stores its choice in the WHMCS session, not the client profile — the
+  panel read only the profile, so switching to German changed nothing.
+  Resolution is now session &rarr; profile &rarr; installation default.
+- **Published projects reads like a sentence.** "Published projects 0 of
+  10" when a real limit exists; a bare count when the limit is 0 or the
+  plan is unlimited — no more "0 / 0". Same for custom domains. Label and
+  the "of" connector translated in all five languages.
+
 ## [1.17.0] - 2026-07-31
 
 ### Added
