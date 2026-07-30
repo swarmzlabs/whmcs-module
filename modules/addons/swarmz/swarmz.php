@@ -50,7 +50,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.9.0',
+        'version'     => '1.10.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',

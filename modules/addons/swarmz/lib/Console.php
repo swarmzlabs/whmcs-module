@@ -70,9 +70,8 @@ class Console
         $out = $this->styles();
         $out .= '<div class="swarmz-console">';
         $out .= '<div class="swz-head">'
-            . '<div><h2 class="swz-title">Swarmz Reseller Console</h2>'
-            . '<p class="swz-sub">Which customer is on which plan, and their live credit + cloud usage. '
-            . 'All money shown is your <strong>wholesale</strong> cost from Swarmz &mdash; set your retail price in WHMCS product pricing.</p></div>'
+            . '<h2 class="swz-title">Swarmz Reseller Console</h2>'
+            . '<p class="swz-sub">Who&rsquo;s on which plan, their live credit balances, and your wholesale cost from Swarmz.</p>'
             . '</div>';
 
         if (!$this->serverLibAvailable) {
@@ -392,7 +391,7 @@ class Console
             . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
             . '</div></div>';
         $title = '<h3 class="swz-section-title">Named plans</h3>';
-        $intro = '<p class="swz-muted" style="margin:0 0 10px;">Each plan bundles a full set of '
+        $intro = '<p class="swz-lede">Each plan bundles a full set of '
             . 'entitlements behind a stable <code>code</code>. Select a plan in a '
             . 'product&rsquo;s <strong>&ldquo;Plan&rdquo;</strong> module config option to provision by name '
             . '&mdash; the entitlements are resolved server-side from the plan.</p>';
@@ -481,8 +480,8 @@ class Console
         $jsUrl = $systemUrl . '/modules/addons/swarmz/promptbox.php?a=js';
 
         $out = $back;
-        $out .= '<h3 class="swz-section-title">Prompt Box &mdash; capture the first prompt on YOUR site</h3>';
-        $out .= '<p class="swz-muted" style="margin:0 0 14px;max-width:760px;">Paste one <code>&lt;script&gt;</code> tag '
+        $out .= '<h3 class="swz-section-title">Prompt Box &mdash; capture the first prompt on your site</h3>';
+        $out .= '<p class="swz-lede">Paste one <code>&lt;script&gt;</code> tag '
             . 'on any page (plain HTML, WordPress, any builder). Visitors type the app they want, pick a plan, and land '
             . 'in your WHMCS cart &mdash; the prompt rides along automatically. When the order provisions, their workspace '
             . 'opens on their very first login with that app <strong>already building</strong>.</p>';
@@ -532,7 +531,7 @@ class Console
 
         $out .= '<div class="swz-card">';
         $out .= '<div class="swz-strong" style="margin-bottom:10px;">2 &middot; Copy the embed code</div>';
-        $out .= '<pre id="swzpb-snippet" style="background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12px;'
+        $out .= '<pre id="swzpb-snippet" style="background:#111827;color:#e5e7eb;padding:14px;border-radius:8px;font-size:12px;'
             . 'line-height:1.6;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>';
         $out .= '<div style="margin-top:10px;"><a class="swz-btn" href="#" id="swzpb-copy">Copy to clipboard</a> '
             . '<span id="swzpb-copied" class="swz-muted" style="display:none;">Copied &check;</span></div>';
@@ -604,11 +603,11 @@ class Console
                     $excerpt = substr($prompt, 0, 90) . (strlen($prompt) > 90 ? '…' : '');
                 }
                 if (!empty($it->used_at)) {
-                    $status = '<span class="swz-badge" style="background:#16a34a;">Provisioned</span>';
+                    $status = '<span class="swz-badge swz-badge-ok">Provisioned</span>';
                 } elseif (!empty($it->service_id)) {
-                    $status = '<span class="swz-badge" style="background:#f59e0b;">Ordered</span>';
+                    $status = '<span class="swz-badge swz-badge-warn">Ordered</span>';
                 } else {
-                    $status = '<span class="swz-badge" style="background:#6b7280;">Captured</span>';
+                    $status = '<span class="swz-badge swz-badge-neutral">Captured</span>';
                 }
                 $service = !empty($it->service_id)
                     ? '<a href="clientsservices.php?id=' . (int) $it->service_id . '">#' . (int) $it->service_id . '</a>'
@@ -721,6 +720,16 @@ class Console
         return $this->moneyCur(((int) $p['price_cents']) / 100, $cur);
     }
 
+    /**
+     * "Credit usage · current cycle" section: active-workspace count plus the
+     * three credit lanes (Build / Cloud / AI), each read as "used of granted".
+     *
+     * IMPORTANT SEMANTICS: the lane figures come from the platform-usage
+     * response's `balances` section — a LIVE snapshot of the current billing
+     * cycle. The period tabs scope the USD *cost* figures (wholesale section
+     * below), not these balances; the section caption says so explicitly.
+     * The one money figure (wholesale cost) now lives in renderBillingSummary.
+     */
     private function renderSummary(array $services, array $usage, string $period): string
     {
         $active = 0;
@@ -729,30 +738,39 @@ class Console
                 $active++;
             }
         }
-        $t = $usage['totals'];
-        // The one money figure: the host's real WHOLESALE cost (AI + cloud $).
-        $wholesale = $t['ai'] + $t['cloud'];
 
         // Per-lane CREDITS, summed across every workspace that has a live
-        // balance. Shown as used / granted per lane — never USD.
+        // balance. Shown as "used of granted" per lane — never USD.
         $sum = $this->sumLaneCredits($usage);
 
-        $cards = [
-            ['Active workspaces', (string) $active, '#2563eb', false],
-            ['Build credits', $this->summaryLane($sum['buildUsed'], $sum['buildTotal']), '#7c3aed', true],
-            ['Cloud credits', $this->summaryLane($sum['cloudUsed'], $sum['cloudTotal']), '#0891b2', true],
-            ['AI credits', $this->summaryLane($sum['aiUsed'], $sum['aiTotal']), '#ca8a04', true],
-            ['Wholesale cost', $this->money($wholesale), '#16a34a', false],
-        ];
-        $html = '<div class="swz-cards">';
-        foreach ($cards as $c) {
-            // Lane cards carry inline markup (the muted "/ total"); others are escaped.
-            $value = $c[3] ? $c[1] : $this->esc($c[1]);
-            $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $value . '</div>'
-                . '<div class="swz-card-l">' . $this->esc($c[0]) . '</div></div>';
-        }
-        $html .= '</div>';
-        return $html;
+        return '<div class="swz-section">'
+            . '<h3 class="swz-section-title">Credit usage &middot; current cycle</h3>'
+            . '<p class="swz-section-sub">Live balances summed across all customer workspaces &mdash; each lane reads '
+            . '<strong>used of granted</strong> for the current billing cycle. The period tabs above scope the '
+            . 'costs below, not these balances.</p>'
+            . '<div class="swz-cards">'
+            . $this->statCard('Active workspaces', $this->esc((string) $active),
+                'Services in WHMCS with status Active.')
+            . $this->statCard('Build credits', $this->summaryLane($sum['buildUsed'], $sum['buildTotal']),
+                'Consumed vs the included grant this cycle. Rollover &amp; top-ups still available are listed per customer below.')
+            . $this->statCard('Cloud credits', $this->summaryLane($sum['cloudUsed'], $sum['cloudTotal']),
+                'Consumed vs the plans&rsquo; cloud-credit grant this cycle.')
+            . $this->statCard('AI credits', $this->summaryLane($sum['aiUsed'], $sum['aiTotal']),
+                'Consumed vs the plans&rsquo; AI-credit grant this cycle.')
+            . '</div></div>';
+    }
+
+    /**
+     * One monochrome stat tile: small uppercase label, ink value, muted
+     * caption. $valueHtml and $captionHtml are trusted HTML (callers escape
+     * any dynamic text); $label is escaped here.
+     */
+    private function statCard(string $label, string $valueHtml, string $captionHtml = ''): string
+    {
+        return '<div class="swz-card"><div class="swz-card-l">' . $this->esc($label) . '</div>'
+            . '<div class="swz-card-v">' . $valueHtml . '</div>'
+            . ($captionHtml !== '' ? '<div class="swz-card-c">' . $captionHtml . '</div>' : '')
+            . '</div>';
     }
 
     /**
@@ -787,7 +805,7 @@ class Console
     }
 
     /**
-     * Format a summary lane card value as "used / granted" credits, or an
+     * Format a summary lane card value as "used of granted" credits, or an
      * em-dash when no plan in the account grants that lane.
      */
     private function summaryLane(float $used, float $total): string
@@ -795,7 +813,7 @@ class Console
         if ($total <= 0) {
             return '&mdash;';
         }
-        return number_format($used) . ' <span style="color:#9ca3af;font-size:15px;">/ ' . number_format($total) . '</span>';
+        return number_format($used) . ' <span class="swz-of">of ' . number_format($total) . '</span>';
     }
 
     /**
@@ -816,7 +834,13 @@ class Console
      */
     private function renderBillingSummary(array $billing, array $usage, array $services): string
     {
-        $title = '<h3 class="swz-section-title">Billing summary</h3>';
+        $periodLabel = $this->periodLabel(
+            (isset($usage['period']) && is_array($usage['period'])) ? $usage['period'] : [],
+            'this period'
+        );
+        $head = '<h3 class="swz-section-title">Your wholesale cost &middot; ' . $this->esc($periodLabel) . '</h3>'
+            . '<p class="swz-section-sub">What Swarmz bills <strong>you</strong> for the selected period &mdash; '
+            . 'set your retail price in WHMCS product pricing.</p>';
 
         if ($billing['available'] && !empty($billing['body'])) {
             $b = $billing['body'];
@@ -827,33 +851,32 @@ class Console
 
             // Upcoming invoice → the period's accruing wholesale charge.
             $upcoming = (isset($b['upcoming']) && is_array($b['upcoming'])) ? $b['upcoming'] : null;
-            $purchasedLabel = '—';
+            $upcomingLabel = '&mdash;';
             if ($upcoming !== null) {
                 $cents = (float) ($upcoming['amount_due_cents'] ?? 0);
                 $cur = strtoupper((string) ($upcoming['currency'] ?? 'USD'));
-                $purchasedLabel = $this->moneyCur($cents / 100, $cur);
+                $upcomingLabel = $this->esc($this->moneyCur($cents / 100, $cur));
             }
 
-            $cards = [
-                ['Credits consumed', number_format($consumedCredits), '#7c3aed'],
-                ['AI spend (consumed)', $this->money($consumedUsd), '#0891b2'],
-                ['Cloud spend', $this->money($cloudUsd), '#ca8a04'],
-                ['Upcoming invoice', $purchasedLabel, '#16a34a'],
-            ];
-
-            $html = $title . '<div class="swz-cards">';
-            foreach ($cards as $c) {
-                $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $this->esc($c[1]) . '</div>'
-                    . '<div class="swz-card-l">' . $this->esc($c[0]) . '</div></div>';
-            }
-            $html .= '</div>';
+            $html = '<div class="swz-section">' . $head . '<div class="swz-cards">'
+                . $this->statCard('Wholesale total', $this->esc($this->money($consumedUsd + $cloudUsd)),
+                    'AI spend + cloud spend &mdash; your cost from Swarmz.')
+                . $this->statCard('AI spend', $this->esc($this->money($consumedUsd)),
+                    'USD consumed by AI usage.')
+                . $this->statCard('Cloud spend', $this->esc($this->money($cloudUsd)),
+                    'USD consumed by cloud compute.')
+                . $this->statCard('Upcoming invoice', $upcomingLabel,
+                    'What Swarmz will charge you next.')
+                . $this->statCard('Credits consumed', $this->esc(number_format($consumedCredits)),
+                    'Build credits burned in the selected period.')
+                . '</div>';
 
             // Recent invoices, if present.
             $invoices = (isset($b['invoices']) && is_array($b['invoices'])) ? $b['invoices'] : [];
             if (!empty($invoices)) {
                 $html .= $this->renderInvoices($invoices);
             }
-            return $html;
+            return $html . '</div>';
         }
 
         // ── Degraded mode: derive from platform-usage + configured caps. ──────
@@ -866,33 +889,29 @@ class Console
         // platform-usage API returned (per-workspace caps.cloud_budget_cap).
         $capInfo = $this->aggregateCloudCap($services, $usage);
 
-        $cloudCard = $this->money($cloudUsd);
+        $cloudValue = $this->esc($this->money($cloudUsd));
+        $cloudCaption = 'USD consumed by cloud compute.';
         if ($capInfo['cap'] > 0) {
-            $cloudCard = $this->money($cloudUsd) . ' <span style="color:#9ca3af;font-size:15px;">/ ' . $this->money($capInfo['cap']) . ' cap</span>';
+            $cloudValue .= ' <span class="swz-of">of ' . $this->esc($this->money($capInfo['cap'])) . ' cap</span>';
+            $cloudCaption = 'USD consumed by cloud compute, vs the total cap on your active plans.';
         }
 
-        $cards = [
-            ['Credits consumed', number_format($consumedCredits), '#7c3aed'],
-            ['AI spend (consumed)', $this->money($consumedUsd), '#0891b2'],
-            ['Cloud spend vs cap', $cloudCard, '#ca8a04'],
-        ];
+        $html = '<div class="swz-section">' . $head . '<div class="swz-cards">'
+            . $this->statCard('Wholesale total', $this->esc($this->money($consumedUsd + $cloudUsd)),
+                'AI spend + cloud spend &mdash; your cost from Swarmz for this period.')
+            . $this->statCard('AI spend', $this->esc($this->money($consumedUsd)),
+                'USD consumed by AI usage.')
+            . $this->statCard('Cloud spend', $cloudValue, $cloudCaption)
+            . $this->statCard('Credits consumed', $this->esc(number_format($consumedCredits)),
+                'Build credits burned in the selected period.')
+            . '</div>';
 
-        $html = $title . '<div class="swz-cards">';
-        foreach ($cards as $c) {
-            $html .= '<div class="swz-card"><div class="swz-card-v" style="color:' . $c[2] . ';">' . $c[1] . '</div>'
-                . '<div class="swz-card-l">' . $this->esc($c[0]) . '</div></div>';
-        }
-        $html .= '</div>';
+        // Compact footnote: why purchased/rollover/upcoming aren't shown here.
+        $html .= '<p class="swz-note">Purchased credits, rollover balance and the upcoming invoice are tied to your '
+            . 'Swarmz <strong>owner sign-in</strong>, so they live on the Swarmz billing page and can&rsquo;t be read '
+            . 'with the reseller API key. Everything above is live consumption for the selected period.</p>';
 
-        // Explain why purchased/rollover/upcoming aren't shown here.
-        $note = 'Credits <strong>purchased</strong>, rollover balance and the upcoming invoice live on your '
-            . '<strong>Swarmz account billing page</strong> (owner sign-in) &mdash; that summary is tied to your '
-            . 'Swarmz owner login, not the reseller API key, so it can&rsquo;t be pulled into WHMCS. '
-            . 'The figures above are your live <strong>consumption</strong> for the selected period; '
-            . 'cloud spend is shown against the total cap configured on your active plans.';
-        $html .= '<div class="swz-notice" style="background:#f8fafc;border:1px solid #e5e7eb;color:#475569;">' . $note . '</div>';
-
-        return $html;
+        return $html . '</div>';
     }
 
     /**
@@ -1019,17 +1038,21 @@ class Console
                 . '</tr>';
         }
 
-        return '<div class="swz-tablewrap"><table class="swz-table">'
+        return '<div class="swz-section">'
+            . '<h3 class="swz-section-title">Customers</h3>'
+            . '<p class="swz-section-sub">Credit lanes read <strong>used / included</strong> for the current cycle; '
+            . 'the build lane also lists any rollover and top-up credits still available. A dash means the workspace '
+            . 'reported no live balance for that lane.</p>'
+            . '<div class="swz-tablewrap"><table class="swz-table">'
             . '<thead><tr>'
             . '<th>Customer</th><th>Plan</th><th>Status</th><th>Tenant</th>'
             . '<th class="swz-num">Build credits</th><th class="swz-num">Cloud credits</th>'
             . '<th class="swz-num">AI credits</th><th class="swz-num">Wholesale cost</th><th></th>'
             . '</tr></thead><tbody>' . $rows . '</tbody></table></div>'
-            . '<p class="swz-muted" style="margin-top:10px;">Tenant = Swarmz workspace id stored on the service. '
-            . 'Credit lanes show <strong>used / grant</strong> this cycle (build includes any rollover + top-up '
-            . 'still available). <strong>Wholesale cost</strong> is your AI + cloud cost from Swarmz for the '
-            . 'selected period &mdash; set your retail price in WHMCS product pricing. A row of dashes simply had '
-            . 'no live balance for that lane.</p>';
+            . '<p class="swz-muted" style="margin-top:8px;">Tenant is the Swarmz workspace id stored on the WHMCS service. '
+            . 'Wholesale cost is your AI + cloud cost from Swarmz for the selected period &mdash; set your retail price '
+            . 'in WHMCS product pricing.</p>'
+            . '</div>';
     }
 
     /**
@@ -1117,29 +1140,33 @@ class Console
         return isset($map[$label]) ? $map[$label] : $label;
     }
 
+    /**
+     * Semantic status pill — muted tinted background + dark text (never a
+     * saturated fill). Also used for invoice statuses (paid/open).
+     */
     private function statusBadge(string $status): string
     {
         $s = strtolower($status);
-        $color = '#6b7280';
-        if ($s === 'active') {
-            $color = '#16a34a';
+        $class = 'swz-badge-neutral';
+        if ($s === 'active' || $s === 'paid') {
+            $class = 'swz-badge-ok';
         } elseif ($s === 'suspended') {
-            $color = '#d97706';
+            $class = 'swz-badge-warn';
         } elseif ($s === 'terminated' || $s === 'cancelled') {
-            $color = '#dc2626';
-        } elseif ($s === 'pending') {
-            $color = '#2563eb';
+            $class = 'swz-badge-bad';
+        } elseif ($s === 'pending' || $s === 'open') {
+            $class = 'swz-badge-info';
         }
-        return '<span class="swz-badge" style="background:' . $color . ';">' . $this->esc($status ?: 'Unknown') . '</span>';
+        return '<span class="swz-badge ' . $class . '">' . $this->esc($status ?: 'Unknown') . '</span>';
     }
 
     private function notice(string $type, string $html): string
     {
         $colors = [
-            'info'    => ['#eff6ff', '#bfdbfe', '#1e40af'],
-            'success' => ['#f0fdf4', '#bbf7d0', '#166534'],
-            'warning' => ['#fffbeb', '#fde68a', '#92400e'],
-            'danger'  => ['#fef2f2', '#fecaca', '#991b1b'],
+            'info'    => ['#fafafa', '#e5e7eb', '#4b5563'],
+            'success' => ['#f0fdf4', '#dcfce7', '#166534'],
+            'warning' => ['#fffbeb', '#fef3c7', '#92400e'],
+            'danger'  => ['#fef2f2', '#fee2e2', '#991b1b'],
         ];
         $c = isset($colors[$type]) ? $colors[$type] : $colors['info'];
         return '<div class="swz-notice" style="background:' . $c[0] . ';border:1px solid ' . $c[1] . ';color:' . $c[2] . ';">' . $html . '</div>';
@@ -1175,37 +1202,62 @@ class Console
         return $out === null ? '' : $out;
     }
 
+    /**
+     * Self-contained inline stylesheet (no external fonts/CSS — must render
+     * standalone inside the WHMCS admin theme).
+     *
+     * Palette (deliberately restrained): near-black/gray ink on white with
+     * hairline borders; ONE accent (#4f46e5, the Swarmz indigo) reserved for
+     * links and the active period tab. Status pills stay semantic but muted
+     * (tinted background + dark text — never saturated fills).
+     */
     private function styles(): string
     {
         return '<style>
-.swarmz-console{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111827;}
-.swarmz-console .swz-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:8px;}
-.swarmz-console .swz-title{margin:0;font-size:22px;font-weight:700;}
-.swarmz-console .swz-sub{margin:4px 0 0;color:#6b7280;font-size:13px;max-width:760px;}
-.swarmz-console .swz-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:16px 0;}
-.swarmz-console .swz-tabs{display:inline-flex;background:#f3f4f6;border-radius:8px;padding:3px;}
-.swarmz-console .swz-tab{padding:6px 14px;border-radius:6px;font-size:13px;color:#374151;text-decoration:none;}
-.swarmz-console .swz-tab-active{background:#fff;color:#111827;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08);}
-.swarmz-console .swz-actions{display:inline-flex;gap:8px;}
-.swarmz-console .swz-btn{display:inline-block;padding:6px 12px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;text-decoration:none;font-size:13px;}
-.swarmz-console .swz-btn:hover{background:#f9fafb;}
+.swarmz-console{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2937;}
+.swarmz-console a{color:#4f46e5;text-decoration:none;}
+.swarmz-console a:hover{text-decoration:underline;}
+.swarmz-console .swz-head{margin:2px 0 0;}
+.swarmz-console .swz-title{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em;color:#111827;}
+.swarmz-console .swz-sub{margin:4px 0 0;color:#6b7280;font-size:13px;max-width:720px;line-height:1.5;}
+.swarmz-console .swz-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:18px 0 22px;}
+.swarmz-console .swz-tabs{display:inline-flex;border:1px solid #e5e7eb;border-radius:7px;overflow:hidden;background:#fff;}
+.swarmz-console .swz-tab{padding:6px 14px;font-size:13px;color:#4b5563;text-decoration:none;border-right:1px solid #e5e7eb;}
+.swarmz-console .swz-tab:last-child{border-right:none;}
+.swarmz-console .swz-tab:hover{background:#fafafa;text-decoration:none;color:#111827;}
+.swarmz-console .swz-tab-active,.swarmz-console .swz-tab-active:hover{background:#4f46e5;color:#fff;font-weight:600;}
+.swarmz-console .swz-actions{display:inline-flex;gap:8px;flex-wrap:wrap;}
+.swarmz-console .swz-btn{display:inline-block;padding:6px 12px;border:1px solid #e5e7eb;border-radius:7px;background:#fff;color:#374151;text-decoration:none;font-size:13px;}
+.swarmz-console .swz-btn:hover{border-color:#d1d5db;background:#fafafa;color:#111827;text-decoration:none;}
 .swarmz-console .swz-btn-sm{padding:3px 10px;font-size:12px;}
-.swarmz-console .swz-section-title{margin:18px 0 8px;font-size:15px;font-weight:700;color:#374151;}
-.swarmz-console .swz-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:8px 0 20px;}
-.swarmz-console .swz-card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;}
-.swarmz-console .swz-card-v{font-size:26px;font-weight:700;line-height:1.1;}
-.swarmz-console .swz-card-l{margin-top:6px;color:#6b7280;font-size:12px;}
-.swarmz-console .swz-tablewrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:10px;}
+.swarmz-console .swz-section{margin:0 0 26px;}
+.swarmz-console .swz-section-title{margin:18px 0 3px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.07em;}
+.swarmz-console .swz-section-sub{margin:0 0 10px;color:#9ca3af;font-size:12.5px;max-width:720px;line-height:1.5;}
+.swarmz-console .swz-lede{margin:0 0 12px;color:#6b7280;font-size:13px;line-height:1.55;max-width:760px;}
+.swarmz-console .swz-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:0 0 4px;}
+.swarmz-console .swz-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;}
+.swarmz-console .swz-card-l{color:#6b7280;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
+.swarmz-console .swz-card-v{margin-top:6px;font-size:22px;font-weight:600;line-height:1.2;color:#111827;font-variant-numeric:tabular-nums;}
+.swarmz-console .swz-card-c{margin-top:5px;color:#9ca3af;font-size:12px;line-height:1.45;}
+.swarmz-console .swz-of{color:#9ca3af;font-size:14px;font-weight:400;}
+.swarmz-console .swz-tablewrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:8px;background:#fff;}
 .swarmz-console .swz-table{width:100%;border-collapse:collapse;font-size:13px;}
-.swarmz-console .swz-table th,.swarmz-console .swz-table td{padding:10px 12px;border-bottom:1px solid #f0f1f3;text-align:left;vertical-align:top;}
-.swarmz-console .swz-table thead th{background:#f9fafb;color:#6b7280;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.03em;}
+.swarmz-console .swz-table th,.swarmz-console .swz-table td{padding:9px 12px;border-bottom:1px solid #f3f4f6;text-align:left;vertical-align:top;}
+.swarmz-console .swz-table thead th{background:#fafafa;color:#6b7280;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e5e7eb;}
 .swarmz-console .swz-table tbody tr:last-child td{border-bottom:none;}
+.swarmz-console .swz-table tbody tr:hover td{background:#fafafa;}
 .swarmz-console .swz-num{text-align:right;font-variant-numeric:tabular-nums;}
-.swarmz-console .swz-strong{font-weight:700;}
+.swarmz-console .swz-strong{font-weight:600;color:#111827;}
 .swarmz-console .swz-muted{color:#9ca3af;font-size:12px;}
-.swarmz-console .swz-badge{display:inline-block;padding:2px 8px;border-radius:999px;color:#fff;font-size:11px;font-weight:600;}
-.swarmz-console .swz-notice{padding:12px 14px;border-radius:8px;margin:12px 0;font-size:13px;}
-.swarmz-console code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px;}
+.swarmz-console .swz-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid transparent;}
+.swarmz-console .swz-badge-ok{background:#f0fdf4;color:#15803d;border-color:#dcfce7;}
+.swarmz-console .swz-badge-warn{background:#fffbeb;color:#b45309;border-color:#fef3c7;}
+.swarmz-console .swz-badge-bad{background:#fef2f2;color:#b91c1c;border-color:#fee2e2;}
+.swarmz-console .swz-badge-info{background:#eef2ff;color:#4338ca;border-color:#e0e7ff;}
+.swarmz-console .swz-badge-neutral{background:#f3f4f6;color:#4b5563;border-color:#e5e7eb;}
+.swarmz-console .swz-notice{padding:12px 14px;border-radius:8px;margin:12px 0;font-size:13px;line-height:1.5;}
+.swarmz-console .swz-note{margin:10px 0 0;padding:2px 0 2px 12px;border-left:2px solid #e5e7eb;color:#6b7280;font-size:12.5px;line-height:1.55;max-width:680px;}
+.swarmz-console code{background:#f3f4f6;color:#374151;padding:1px 5px;border-radius:4px;font-size:12px;}
 </style>';
     }
 }

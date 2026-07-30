@@ -5,6 +5,47 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-07-22
+
+Reseller Console redesign: a minimal, monochrome UI and unambiguous usage
+semantics. Presentation-only — no data fetching, API calls, or behavior
+changed.
+
+### Changed
+- **Console restyled — monochrome, one accent.** The five differently-colored
+  stat cards (purple/blue/teal/amber/green) are gone. The console now uses
+  near-black/gray ink on white with hairline borders and generous whitespace;
+  a single indigo accent is reserved for links and the active period tab.
+  Status pills stay semantic but muted (tinted background + dark text instead
+  of saturated fills), and notices/badges across the dashboard, Plans view and
+  Prompt Box view follow the same palette. Still fully self-contained inline
+  CSS — no external fonts or stylesheets.
+- **Every number now says what it is.** The dashboard is reorganized into
+  labelled sections:
+  - *Credit usage · current cycle* — Active workspaces plus the Build / Cloud /
+    AI lanes, each reading "used **of** granted" with a one-line caption
+    (e.g. "Consumed vs the included grant this cycle"). The section states
+    explicitly that these are **live current-cycle balances** which the period
+    tabs do not scope (the tabs scope costs).
+  - *Your wholesale cost · \<period\>* — the former "Billing summary", retitled
+    and led by a new **Wholesale total** tile (AI spend + cloud spend — the
+    same figure the old headline "Wholesale cost" card showed), with AI spend,
+    Cloud spend (vs cap when the plans set one), Credits consumed, and — when
+    the owner-authed billing summary is reachable — the Upcoming invoice and
+    recent invoices. Captioned "What Swarmz bills you for the selected period —
+    set your retail price in WHMCS product pricing."
+  - *Customers* — the table is unchanged structurally, but the used/included
+    convention and the meaning of a dash ("no live balance reported for that
+    lane") are explained once in a caption above the table instead of per-cell
+    noise; the footer note is trimmed to tenant-id + wholesale-cost semantics.
+- **The billing-summary explainer is a compact footnote** (why purchased
+  credits / rollover / upcoming invoice live on the Swarmz billing page and
+  can't be read with the reseller API key) instead of a wall-of-text notice.
+
+### Versions
+- Reseller Console addon `version` bumped `1.9.0` → **`1.10.0`**.
+  `Api::VERSION` is unchanged — this release contains no API-client changes.
+
 ## [1.9.0] - 2026-07-18
 
 The storefront release: an embeddable **Prompt Box** that carries a visitor's
