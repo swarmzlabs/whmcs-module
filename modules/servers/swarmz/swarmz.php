@@ -302,6 +302,18 @@ function swarmz_CreateAccount(array $params)
             Helpers::markPromptUsedForService($serviceId);
         }
 
+        // Credit-pack catch-up (v1.11.0): if the customer ordered a mapped
+        // credit-pack addon WITH this product, its invoice was usually paid
+        // BEFORE this provision stored the tenant id — so the InvoicePaid
+        // grant deferred. Now that the tenant exists, grant those packs.
+        // Idempotent (platform dedupes per invoice line) and best-effort.
+        try {
+            Helpers::grantPaidCreditPacksForService($serviceId);
+        } catch (\Throwable $e) {
+            // Never fail a successful provision over a pack grant; the daily
+            // cron sweep retries idempotently.
+        }
+
         return 'success';
     } catch (\Throwable $e) {
         _swarmz_logModuleCall('CreateAccount.Error', $params, ['error' => $e->getMessage()], $api ? $api->maskedKey() : '');
@@ -1031,12 +1043,29 @@ function swarmz_AdminServicesTabFields(array $params)
         ? '<code style="font-size:12px;">' . htmlspecialchars($tenantId, ENT_QUOTES) . '</code>'
         : '<em>not provisioned yet</em>';
 
+    // Admin SSO (v1.11.0): the actionable link — mints a fresh platform-sso
+    // redirect via the Reseller Console addon and lands the admin INSIDE the
+    // customer's workspace, signed in. The plain dashboard URL below is kept
+    // as reference, but unauthenticated it only shows the tenant's login.
+    $ssoLink = '<em>not provisioned yet</em>';
+    if ($tenantId !== null) {
+        if (Helpers::addonSetting('version') !== null) {
+            $ssoUrl = 'addonmodules.php?module=swarmz&swarmz_action=adminsso&serviceid=' . $serviceId;
+            $ssoLink = '<a href="' . htmlspecialchars($ssoUrl, ENT_QUOTES) . '" target="_blank" rel="noopener" '
+                . 'class="btn btn-sm btn-info">Open workspace (signs you in) &raquo;</a>';
+        } else {
+            $ssoLink = '<em>activate the Swarmz Reseller Console addon to enable one-click admin sign-in</em>';
+        }
+    }
+
     $dashLink = $dashboardUrl !== null
-        ? '<a href="' . htmlspecialchars($dashboardUrl, ENT_QUOTES) . '" target="_blank" rel="noopener">Open dashboard &raquo;</a>'
+        ? '<a href="' . htmlspecialchars($dashboardUrl, ENT_QUOTES) . '" target="_blank" rel="noopener">'
+            . htmlspecialchars($dashboardUrl, ENT_QUOTES) . '</a> <span style="opacity:.6;">(unauthenticated link)</span>'
         : '<em>not provisioned yet</em>';
 
     return [
         'Swarmz Tenant'    => $tenantLabel,
+        'Swarmz Workspace' => $ssoLink,
         'Swarmz Dashboard' => $dashLink,
     ];
 }
@@ -1049,17 +1078,25 @@ function swarmz_AdminServicesTabFields(array $params)
  */
 function swarmz_AdminLink(array $params)
 {
+    // WHMCS renders AdminLink on the SERVER configuration page (Setup →
+    // Servers), where there is no service context — the previous
+    // implementation targeted sso.php?direct (which additionally requires a
+    // CLIENT session, so it could never work for an admin) and was dead on
+    // both counts. Admin sign-in into a customer's workspace now lives on the
+    // admin Service Details tab ("Open workspace" → the Reseller Console's
+    // adminsso action). Here, with a service id absent, there is nothing
+    // useful to link — render nothing.
     $serviceId = (int) ($params['serviceid'] ?? 0);
     if ($serviceId <= 0) {
         return '';
     }
-    // Supplying a direct AdminLink is the way to expose a custom admin CTA. We
-    // render a tiny form that posts to the WHMCS single-sign-on endpoint, which
-    // routes through the client/service SSO flow (swarmz_ServiceSingleSignOn).
-    $url = 'sso.php?direct=true&sso_redirect_action=service&sso_redirect_id=' . $serviceId;
-    return '<form action="' . htmlspecialchars($url, ENT_QUOTES) . '" method="post" target="_blank" style="display:inline;">'
-        . '<button type="submit" class="btn btn-info">Open AI Editor</button>'
-        . '</form>';
+    // Defensive: if a WHMCS version ever supplies a service context, offer the
+    // same admin SSO launcher the Service Details tab uses.
+    if (Helpers::getTenantId($serviceId) === null || Helpers::addonSetting('version') === null) {
+        return '';
+    }
+    $url = 'addonmodules.php?module=swarmz&swarmz_action=adminsso&serviceid=' . $serviceId;
+    return '<a href="' . htmlspecialchars($url, ENT_QUOTES) . '" target="_blank" rel="noopener" class="btn btn-info">Open workspace</a>';
 }
 
 /**
@@ -1159,6 +1196,10 @@ function swarmz_ClientArea(array $params)
             'editorButtonLabel' => Helpers::editorButtonLabel(),
             'creditTerm'        => Helpers::creditTerm(),
             'supportUrl'        => Helpers::supportUrl(),
+            // Credit packs (v1.11.0): the addon-store link, or '' when the host
+            // has no mapped, orderable pack assigned to this product. The
+            // template renders a quiet "buy more" link only when non-empty.
+            'buyCreditsUrl'     => Helpers::creditPackStoreUrl($serviceId),
         ],
     ];
 }

@@ -701,4 +701,231 @@ class Helpers
         return (int) $n;
     }
 
+    // =========================================================================
+    // Credit packs (v1.11.0) — grant Swarmz top-up credits for paid WHMCS
+    // Product Addons the host mapped in the Reseller Console.
+    //
+    // Payment is the single grant trigger: every PAID invoice line of type
+    // 'Addon' whose addon definition is mapped grants once, keyed on
+    // (invoice, hosting-addon) — /platform-topup dedupes on that key, so
+    // re-fired InvoicePaid hooks, the daily sweep, and CreateAccount's
+    // catch-up can never double-grant. One-time addons grant once; recurring
+    // addons re-grant on every paid renewal invoice.
+    // =========================================================================
+
+    /** Mapping table owned by the Reseller Console addon (CreditPacks lib). */
+    const CREDIT_PACKS_TABLE = 'mod_swarmz_credit_packs';
+
+    /**
+     * addon definition id → credits, for every mapped pack. Empty when the
+     * console addon was never activated on ≥ 1.11.0 (no table) or nothing is
+     * mapped. Read directly by table name so the server module never depends
+     * on the addon module's code being loadable.
+     *
+     * @return array<int,int>
+     */
+    public static function creditPackMap(): array
+    {
+        try {
+            if (!Capsule::schema()->hasTable(self::CREDIT_PACKS_TABLE)) {
+                return [];
+            }
+            $map = [];
+            foreach (Capsule::table(self::CREDIT_PACKS_TABLE)->get(['addon_id', 'credits']) as $r) {
+                $credits = (int) $r->credits;
+                if ($credits > 0) {
+                    $map[(int) $r->addon_id] = $credits;
+                }
+            }
+            return $map;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Client-area "buy more credits" link for a service — the WHMCS addon
+     * store page — or '' when there is nothing to sell: no mapped pack whose
+     * addon is orderable (showorder) and assigned to this service's product.
+     * tbladdons.packages is a comma-separated product-id list ('' = none).
+     */
+    public static function creditPackStoreUrl(int $serviceId): string
+    {
+        try {
+            $map = self::creditPackMap();
+            if (empty($map)) {
+                return '';
+            }
+            $svc = Capsule::table('tblhosting')->where('id', $serviceId)->first(['packageid']);
+            if (!$svc) {
+                return '';
+            }
+            $pid = (string) ((int) $svc->packageid);
+            $rows = Capsule::table('tbladdons')
+                ->whereIn('id', array_keys($map))
+                ->where('showorder', 1)
+                ->get(['id', 'packages']);
+            foreach ($rows as $r) {
+                $assigned = array_filter(array_map('trim', explode(',', (string) $r->packages)));
+                if (in_array($pid, $assigned, true)) {
+                    return 'cart.php?gid=addons';
+                }
+            }
+            return '';
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
+     * Grant every mapped credit pack on a PAID invoice. Called from the
+     * InvoicePaid hook. Best-effort per line; never throws.
+     */
+    public static function grantCreditPacksOnInvoice(int $invoiceId): void
+    {
+        $map = self::creditPackMap();
+        if ($invoiceId <= 0 || empty($map)) {
+            return;
+        }
+        try {
+            // Addon lines carry the client's hosting-addon instance id in relid.
+            $items = Capsule::table('tblinvoiceitems')
+                ->where('invoiceid', $invoiceId)
+                ->where('type', 'Addon')
+                ->get(['relid']);
+        } catch (\Throwable $e) {
+            return;
+        }
+        foreach ($items as $item) {
+            $haId = (int) $item->relid;
+            if ($haId > 0) {
+                self::grantOneCreditPack($invoiceId, $haId, $map);
+            }
+        }
+    }
+
+    /**
+     * Catch-up for one service: grant any mapped packs on its RECENT paid
+     * invoices (last 30 days). Covers the first-order race — the order's
+     * invoice is often marked paid BEFORE CreateAccount has stored a tenant
+     * id, so the InvoicePaid grant finds nothing to top up. CreateAccount
+     * calls this right after provisioning, and the daily cron calls it for
+     * every active service as a safety net. Idempotent end-to-end.
+     */
+    public static function grantPaidCreditPacksForService(int $serviceId): void
+    {
+        $map = self::creditPackMap();
+        if ($serviceId <= 0 || empty($map)) {
+            return;
+        }
+        try {
+            $haRows = Capsule::table('tblhostingaddons')
+                ->where('hostingid', $serviceId)
+                ->whereIn('addonid', array_keys($map))
+                ->get(['id']);
+            $haIds = [];
+            foreach ($haRows as $r) {
+                $haIds[] = (int) $r->id;
+            }
+            if (empty($haIds)) {
+                return;
+            }
+            $since = date('Y-m-d', strtotime('-30 days'));
+            $items = Capsule::table('tblinvoiceitems as ii')
+                ->join('tblinvoices as i', 'i.id', '=', 'ii.invoiceid')
+                ->where('ii.type', 'Addon')
+                ->whereIn('ii.relid', $haIds)
+                ->where('i.status', 'Paid')
+                ->where('i.datepaid', '>=', $since . ' 00:00:00')
+                ->get(['ii.invoiceid', 'ii.relid']);
+        } catch (\Throwable $e) {
+            return;
+        }
+        foreach ($items as $item) {
+            self::grantOneCreditPack((int) $item->invoiceid, (int) $item->relid, $map);
+        }
+    }
+
+    /**
+     * Grant a single (invoice, hosting-addon) credit-pack line. Resolves the
+     * parent service → tenant + key, and posts /platform-topup with the
+     * deterministic idempotency key `whmcs-inv<invoice>-ha<hostingaddon>`.
+     * The platform dedupes on it, so every caller path is repeat-safe.
+     *
+     * @param array<int,int> $map addon definition id → credits
+     */
+    private static function grantOneCreditPack(int $invoiceId, int $haId, array $map): void
+    {
+        try {
+            $ha = Capsule::table('tblhostingaddons')
+                ->where('id', $haId)
+                ->first(['id', 'addonid', 'hostingid']);
+            if (!$ha) {
+                return;
+            }
+            $credits = $map[(int) $ha->addonid] ?? 0;
+            if ($credits <= 0) {
+                return; // not a mapped pack
+            }
+            $serviceId = (int) $ha->hostingid;
+            $tenantId = self::getTenantId($serviceId);
+            if ($tenantId === null || $tenantId === '') {
+                // Not provisioned yet — the CreateAccount catch-up / daily
+                // sweep re-runs this idempotently once the tenant exists.
+                self::creditPackLog('CreditPack.Deferred', [
+                    'invoiceid' => $invoiceId, 'hostingaddon' => $haId, 'serviceid' => $serviceId,
+                ], ['note' => 'service has no tenant id yet']);
+                return;
+            }
+
+            // Per-service key (server Password) → fall back to the addon key.
+            $key = self::resolveServiceServerKey($serviceId);
+            if ($key === '') {
+                $key = trim((string) self::addonSetting('API Key', ''));
+            }
+            if ($key === '') {
+                self::creditPackLog('CreditPack.NoKey', ['serviceid' => $serviceId], ['note' => 'no API key configured']);
+                return;
+            }
+            $baseUrl = trim((string) self::addonSetting('API Base URL', ''));
+            $baseUrl = $baseUrl !== '' ? rtrim($baseUrl, '/') : self::DEFAULT_API_BASE_URL;
+
+            $api = new Api($key, $baseUrl);
+            $body = [
+                'tenant_id'       => $tenantId,
+                'amount'          => $credits,
+                'idempotency_key' => 'whmcs-inv' . $invoiceId . '-ha' . $haId,
+            ];
+            $result = $api->postPlatform('platform-topup', $body);
+            self::creditPackLog('CreditPack.Granted', $body + ['serviceid' => $serviceId], $result['body'] ?? [], $api->maskedKey());
+        } catch (SwarmzApiException $e) {
+            // 409 suspended / 410 terminated / 5xx — log and move on; the daily
+            // sweep retries idempotently while the invoice stays recent.
+            self::creditPackLog('CreditPack.Failed', [
+                'invoiceid' => $invoiceId, 'hostingaddon' => $haId,
+            ], ['status' => $e->getStatusCode(), 'error' => $e->getErrorCode()]);
+        } catch (\Throwable $e) {
+            self::creditPackLog('CreditPack.Failed', [
+                'invoiceid' => $invoiceId, 'hostingaddon' => $haId,
+            ], ['error' => $e->getMessage()]);
+        }
+    }
+
+    /** Module-log wrapper for pack grants (mirrors _swarmz_hookLog redaction). */
+    private static function creditPackLog(string $action, $request, $response, string $maskedKey = ''): void
+    {
+        if (!function_exists('logModuleCall')) {
+            return;
+        }
+        $replaceVars = ['sk_live_', 'sk_test_', 'Bearer '];
+        if ($maskedKey !== '') {
+            $replaceVars[] = $maskedKey;
+        }
+        try {
+            logModuleCall('swarmz', $action, $request, $response, $response, $replaceVars);
+        } catch (\Throwable $e) {
+            // Logging must never break a grant.
+        }
+    }
+
 }

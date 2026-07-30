@@ -94,6 +94,18 @@
 .swz-sub { font-size: 12.5px; opacity: .62; line-height: 1.45; margin: 0; }
 .swz-sub .swz-muted { opacity: .8; }
 .swz-footer { margin-top: 18px; font-size: 12.5px; opacity: .65; }
+.swz-buy {
+    margin-top: 12px; display: flex; align-items: center; justify-content: space-between;
+    gap: 14px; flex-wrap: wrap; padding: 11px 14px; border: 1px dashed rgba(128,128,128,.35);
+    border-radius: 10px; font-size: 12.5px; opacity: .88;
+}
+.swz-buy-btn {
+    display: inline-block; padding: 6px 13px; border: 1px solid currentColor; border-radius: 8px;
+    font-size: 12.5px; font-weight: 650; text-decoration: none; color: inherit; white-space: nowrap;
+}
+.swz-buy-btn:hover { text-decoration: none; opacity: .75; }
+.swz-buy-btn .swz-arrow { transition: transform .15s ease; display: inline-block; }
+.swz-buy-btn:hover .swz-arrow { transform: translateX(3px); }
 @media (max-width: 640px) {
     .swz-hero { padding: 16px; }
     .swz-launch { width: 100%; justify-content: center; }
@@ -228,6 +240,15 @@
             </div>
 
         </div>
+
+        {* Credit packs (v1.11.0): quiet "buy more" row — only when the host has
+           an orderable, mapped credit-pack addon assigned to this product. *}
+        {if $buyCreditsUrl}
+            <div class="swz-buy">
+                <span>Running low? Buy extra {$ct|escape} any time &mdash; they&rsquo;re added to your workspace as soon as payment clears.</span>
+                <a class="swz-buy-btn" href="{$buyCreditsUrl|escape}">Buy {$ct|escape} <span class="swz-arrow">&rarr;</span></a>
+            </div>
+        {/if}
 
         {* ---------- Plan limits ---------- *}
         <div class="swz-section-title">Plan</div>

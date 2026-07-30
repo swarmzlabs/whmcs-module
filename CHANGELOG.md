@@ -5,6 +5,57 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-07-28
+
+Credit packs: sell extra Swarmz credits as ordinary WHMCS Product Addons. A
+customer who runs out mid-build no longer dead-ends — even on your highest
+plan they can buy a top-up pack and keep building.
+
+### Added
+- **Credit packs (Product Addons → Swarmz top-up credits).** Create a normal
+  WHMCS Product Addon ("1,000 Extra Credits", one-time or recurring, no
+  provisioning module on the addon), then map it to a credit amount in the
+  Reseller Console's new **Credit Packs** page. Every PAID invoice line for a
+  mapped addon grants the credits to the customer's workspace via
+  `/platform-topup`:
+  - **Payment is the trigger** — one-time addons grant once; recurring addons
+    re-grant on every paid renewal invoice.
+  - **Idempotent end-to-end** — the grant key is `whmcs-inv<invoice>-ha<addon>`
+    and the platform dedupes on it, so re-fired hooks, the daily sweep, and
+    provisioning catch-up can never double-grant.
+  - **Self-healing** — if the pack was paid before the service was provisioned
+    (the usual first-order sequence), `CreateAccount` grants it right after
+    provisioning; a daily cron sweep re-checks the last 30 days of paid
+    invoices for anything still missed.
+  - **Wholesale metering** — the platform meters you for top-up credits at
+    assignment (charge-on-assign); top-ups expire 12 months after purchase.
+- **Console → Credit Packs page.** Lists every Product Addon with billing
+  cycle, store visibility, and product assignments; set the credits per
+  purchase inline (0/blank unmaps). Storage is a module-owned table
+  (`mod_swarmz_credit_packs`), created on activate/upgrade.
+- **Client-area "buy more" row.** The service overview shows a quiet
+  "Buy \<credits\>" link to the addon store — only when the product actually
+  has an orderable, mapped pack assigned, and worded with the host's own
+  credit term.
+- **Admin SSO — "Open workspace" on the Service Details tab.** Admins viewing
+  a customer's product previously had only the unauthenticated dashboard URL
+  (the old `AdminLink` SSO button targeted `sso.php?direct`, which requires a
+  *client* session, and WHMCS renders `AdminLink` on the Servers config page
+  anyway — dead on both counts). The Service Details tab now has an **Open
+  workspace (signs you in)** button: it hits the Reseller Console's new
+  `adminsso` action, which mints a fresh `platform-sso` redirect server-side
+  and lands the admin inside the customer's workspace in a new tab. Failures
+  (suspended / terminated / bad key / not provisioned) render as plain
+  console notices; every mint is logged as `AdminSSO` in the Module Log. The
+  dashboard URL row is kept but labeled "(unauthenticated link)".
+
+### Notes
+- Plan upgrades/downgrades need no new module code — WHMCS's native product
+  Upgrade/Downgrade flow already lands in `ChangePackage`, which swaps the
+  plan by `plan_code` with server-side proration. Configure the Upgrades tab
+  on your products to open self-serve upgrades; see the WHMCS guide in the
+  Swarmz docs.
+
 ## [1.10.0] - 2026-07-22
 
 Reseller Console redesign: a minimal, monochrome UI and unambiguous usage
