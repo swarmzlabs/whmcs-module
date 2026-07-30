@@ -394,13 +394,17 @@
             <div class="swz-sect-head"><p class="swz-sect-title">{$L.plan_section}</p></div>
             <div class="swz-limits">
                 <span class="swz-limit">
-                    <span class="swz-limit-label">{$L.published_apps}</span>
+                    <span class="swz-limit-label">{$L.published_projects}</span>
+                    {* "0 of 10" only when a REAL limit exists (limit > 0);
+                       a bare count otherwise — "0 / 0" reads like nonsense. *}
                     {if $publishedCount !== null}
-                        <b>{$publishedCount|string_format:"%d"}</b>{if $publishedLimit !== null}<span class="swz-dim">/ {$publishedLimit|string_format:"%d"}</span>{/if}
-                    {elseif $publishedLimit !== null}
+                        <b>{$publishedCount|string_format:"%d"}</b>{if $publishedLimit !== null && $publishedLimit > 0} <span class="swz-dim">{$L.of} {$publishedLimit|string_format:"%d"}</span>{/if}
+                    {elseif $publishedLimit !== null && $publishedLimit > 0}
                         <b>{$publishedLimit|string_format:"%d"}</b> <span class="swz-dim">{$L.allowed_at_once}</span>
-                    {else}
+                    {elseif $publishedLimit === null}
                         <b>&infin;</b>
+                    {else}
+                        <b>0</b>
                     {/if}
                 </span>
                 <span class="swz-limit">
@@ -408,8 +412,8 @@
                     {if !$customDomainsEnabled}
                         <span class="swz-dim">{$L.not_available}</span>
                     {elseif $domainsCount !== null}
-                        <b>{$domainsCount|string_format:"%d"}</b>{if $domainsLimit !== null}<span class="swz-dim">/ {$domainsLimit|string_format:"%d"}</span>{/if}
-                    {elseif $domainsLimit !== null}
+                        <b>{$domainsCount|string_format:"%d"}</b>{if $domainsLimit !== null && $domainsLimit > 0} <span class="swz-dim">{$L.of} {$domainsLimit|string_format:"%d"}</span>{/if}
+                    {elseif $domainsLimit !== null && $domainsLimit > 0}
                         <b>{$domainsLimit|string_format:"%d"}</b> <span class="swz-dim">{$L.allowed}</span>
                     {else}
                         <b>&infin;</b>
