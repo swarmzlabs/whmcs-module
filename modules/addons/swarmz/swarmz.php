@@ -35,6 +35,7 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/lib/Console.php';
 require_once __DIR__ . '/lib/CreditPacks.php';
 require_once __DIR__ . '/lib/PromptBox.php';
+require_once __DIR__ . '/lib/Updater.php';
 
 /**
  * Addon configuration + the host-side settings page.
@@ -52,7 +53,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.13.0',
+        'version'     => '1.14.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',

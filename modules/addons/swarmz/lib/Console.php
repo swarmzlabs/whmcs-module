@@ -123,6 +123,16 @@ class Console
             return $out;
         }
 
+        // Dedicated "Update" view — in-admin module updater (v1.14.0):
+        // version check against the pinned GitHub repo, preflight, and a
+        // CSRF'd one-click install. See lib/Updater.php for the fail-closed
+        // security model.
+        if ($action === 'update') {
+            $out .= $this->renderUpdatePage();
+            $out .= '</div>';
+            return $out;
+        }
+
         // Dedicated "Credit Packs" view — map WHMCS Product Addons to the
         // Swarmz top-up credits they grant when paid. Fully local (mapping
         // table + tbladdons); the grants themselves ride the InvoicePaid hook.
@@ -148,6 +158,7 @@ class Console
         $billing = $this->fetchBillingSummary();
 
         $out .= $this->renderToolbar($period);
+        $out .= $this->renderUpdateBanner();
         $out .= $this->renderSummary($services, $usage, $period);
         $out .= $this->renderBillingSummary($billing, $usage, $services);
         $out .= $this->renderTable($services, $usage);
@@ -382,9 +393,10 @@ class Console
         $plans = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'plans'])) . '">Plans</a>';
         $packs = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">Credit Packs</a>';
         $promptBox = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">Prompt Box</a>';
+        $updates = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'update'])) . '">Updates</a>';
         $test = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period, 'swarmz_action' => 'testconn'])) . '">Test connection</a>';
 
-        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $promptBox . $refresh . $test . '</div></div>';
+        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $promptBox . $updates . $refresh . $test . '</div></div>';
     }
 
     private function renderTestConnection(string $period): string
@@ -1180,6 +1192,125 @@ class Console
             $class = 'swz-badge-info';
         }
         return '<span class="swz-badge ' . $class . '">' . $this->esc($status ?: 'Unknown') . '</span>';
+    }
+
+    /**
+     * One-line banner on the dashboard when a newer release exists. Cached
+     * (6 h TTL) — a failed or rate-limited check renders nothing rather than
+     * an error, so the host's admin is never degraded by our release feed.
+     */
+    private function renderUpdateBanner(): string
+    {
+        try {
+            $info = Updater::check();
+            if (!Updater::updateAvailable($info)) {
+                return '';
+            }
+            return $this->notice('info',
+                '<strong>Module update available:</strong> v' . $this->esc(Updater::currentVersion())
+                . ' &rarr; v' . $this->esc((string) $info['version'])
+                . ' &nbsp; <a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'update'])) . '">Review &amp; update</a>'
+            );
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+
+    /**
+     * "Update" page: current vs latest, release notes, environment preflight,
+     * and the one-click install (POST + WHMCS admin token). GET never mutates;
+     * "Check again" forces a fresh version check.
+     */
+    private function renderUpdatePage(): string
+    {
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'update', 'recheck' => '1'])) . '">Check again</a>'
+            . '</div></div>';
+        $title = '<h3 class="swz-section-title">Module updates</h3>';
+        $out = $back . $title;
+
+        // Explicit, admin-clicked install — never automatic.
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_do_update'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $result = Updater::performUpdate();
+            if (!empty($result['ok'])) {
+                return $out . $this->notice('success',
+                    '<strong>Updated to v' . $this->esc($result['to']) . '.</strong> '
+                    . (int) $result['files'] . ' files installed; the previous version was backed up to '
+                    . '<code>' . $this->esc(str_replace($this->whmcsRootForDisplay(), '', (string) $result['backup'])) . '</code>. '
+                    . 'Open <strong>System Settings &rarr; Addon Modules</strong> once so WHMCS runs the version upgrade, then reload this console.'
+                );
+            }
+            $out .= $this->notice('danger', '<strong>Update not applied:</strong> ' . $this->esc((string) ($result['error'] ?? 'unknown error')));
+        }
+
+        $force = isset($_REQUEST['recheck']);
+        $info = Updater::check($force);
+        $current = Updater::currentVersion();
+
+        if (empty($info['ok'])) {
+            return $out . $this->notice('warning',
+                'Could not reach the release feed just now (' . $this->esc((string) ($info['error'] ?? 'unknown')) . '). '
+                . 'You are on v' . $this->esc($current) . '; try again in a few minutes.'
+            );
+        }
+
+        if (!Updater::updateAvailable($info)) {
+            $out .= $this->notice('success', 'You are up to date &mdash; v' . $this->esc($current) . ' is the latest release.');
+            return $out;
+        }
+
+        $out .= $this->notice('info',
+            '<strong>v' . $this->esc((string) $info['version']) . ' is available</strong> (you are on v' . $this->esc($current) . ').'
+        );
+
+        if (!empty($info['notes'])) {
+            $out .= '<div class="swz-tablewrap" style="padding:14px 16px;white-space:pre-wrap;font-size:12.5px;line-height:1.55;max-height:320px;overflow:auto;">'
+                . $this->esc((string) $info['notes']) . '</div>';
+        }
+
+        // Preflight — every row must be green before the button does anything.
+        $rows = '';
+        $allOk = true;
+        foreach (Updater::preflight() as $c) {
+            $allOk = $allOk && $c['ok'];
+            $badge = $c['ok']
+                ? '<span class="swz-badge swz-badge-ok">OK</span>'
+                : '<span class="swz-badge swz-badge-warn">Blocked</span>';
+            $rows .= '<tr><td>' . $this->esc($c['label']) . '</td><td>' . $badge . '</td>'
+                . '<td class="swz-muted">' . $this->esc($c['detail']) . '</td></tr>';
+        }
+        $out .= '<div class="swz-tablewrap"><table class="swz-table">'
+            . '<thead><tr><th>Check</th><th></th><th>Detail</th></tr></thead>'
+            . '<tbody>' . $rows . '</tbody></table></div>';
+
+        if (!$allOk) {
+            $out .= $this->notice('warning',
+                'One or more checks are blocked, so the in-admin update is disabled. You can always update by '
+                . 'uploading the release ZIP over the WHMCS root instead &mdash; same result, same safety.'
+            );
+            return $out;
+        }
+
+        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $out .= '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'update'])) . '">'
+            . $token
+            . '<input type="hidden" name="swz_do_update" value="1" />'
+            . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
+            . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Update to v' . $this->esc((string) $info['version']) . '</button> '
+            . '<span class="swz-muted" style="margin-left:8px;">Downloads the signed release, verifies its SHA-256 checksum, backs up the current files, then installs. Settings and data are untouched.</span></p>'
+            . '</form>';
+
+        return $out;
+    }
+
+    /** WHMCS root for display-shortening backup paths (best-effort). */
+    private function whmcsRootForDisplay(): string
+    {
+        return defined('ROOTDIR') ? rtrim((string) ROOTDIR, '/') . '/' : '';
     }
 
     private function notice(string $type, string $html): string
