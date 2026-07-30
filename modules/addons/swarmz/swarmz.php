@@ -53,7 +53,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.15.0',
+        'version'     => '1.16.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
@@ -87,26 +87,6 @@ function swarmz_config()
                 'Type'         => 'text',
                 'Size'         => '40',
                 'Description'  => 'Optional. A support/help link shown to customers in the client-area panel.',
-            ],
-            'Client Theme' => [
-                'FriendlyName' => 'Client Theme',
-                'Type'         => 'dropdown',
-                'Options'      => 'classic,aurora,pulse,carbon,editorial',
-                'Default'      => 'classic',
-                'Description'  => 'The look of the customer-facing service panel. <strong>Classic</strong> — the neutral card layout. <strong>Aurora</strong> — soft glass with a glowing accent. <strong>Pulse</strong> — bold color-block hero with chunky cards. <strong>Carbon</strong> — sleek dark panel, works on any page. <strong>Editorial</strong> — typographic, no boxes, lots of air.',
-            ],
-            'Color Scheme' => [
-                'FriendlyName' => 'Color Scheme',
-                'Type'         => 'dropdown',
-                'Options'      => 'theme,mono,orange,green,red,blue,pink',
-                'Default'      => 'theme',
-                'Description'  => 'Accent color for the client panel. <strong>theme</strong> lets each theme use its own default; the six presets recolor buttons, bars, and highlights.',
-            ],
-            'Accent Color' => [
-                'FriendlyName' => 'Accent Color',
-                'Type'         => 'text',
-                'Size'         => '12',
-                'Description'  => 'Optional custom accent as a hex color (e.g. <code>#7c3aed</code>). When set, this overrides the Color Scheme.',
             ],
             'Meter Cron Secret' => [
                 'FriendlyName' => 'Meter Cron Secret',

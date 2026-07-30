@@ -84,4 +84,6 @@ return [
     'usage_error'     => 'Couldn’t refresh usage just now:',
     'need_help'       => 'Need help?',
     'contact_support' => 'Contact support',
+    'no_pools' => 'No credit allowances are included on this plan.',
+    'updates_fast' => 'Balances update within seconds of a purchase.',
 ];

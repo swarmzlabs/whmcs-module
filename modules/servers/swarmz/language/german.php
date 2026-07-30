@@ -62,4 +62,6 @@ return [
     'usage_error' => 'Die Nutzung konnte gerade nicht aktualisiert werden:',
     'need_help' => 'Brauchen Sie Hilfe?',
     'contact_support' => 'Support kontaktieren',
+    'no_pools' => 'In diesem Tarif ist kein Guthaben enthalten.',
+    'updates_fast' => 'Guthaben werden Sekunden nach dem Kauf aktualisiert.',
 ];

@@ -322,7 +322,7 @@ class Helpers
     }
 
     /** Valid client-area themes (v1.13.0). First entry is the default. */
-    const CLIENT_THEMES = ['classic', 'aurora', 'pulse', 'carbon', 'editorial'];
+    const CLIENT_THEMES = ['classic', 'swarmz', 'cupertino', 'pulse', 'carbon', 'editorial'];
 
     /** Named accent schemes (v1.13.0). 'theme' = let the theme decide. */
     const ACCENT_SCHEMES = [
