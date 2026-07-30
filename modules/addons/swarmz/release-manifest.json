@@ -2,25 +2,25 @@
  "files": {
   "modules/addons/swarmz/hooks.php": "79ce2b8c0d5256b27c229fb9b9b4cf9c9b439afb50f1a02bae213444cde05236",
   "modules/addons/swarmz/lang/english.php": "a3c9d726ca37c61a2e203887a0939d1c21e33c10cc676c81f37a46367a0c62d6",
-  "modules/addons/swarmz/lib/Console.php": "68c018f676df6e30ce1b01f0cdf6426a1da749da9afe2f9ba13a5bc71a19a6bc",
+  "modules/addons/swarmz/lib/Console.php": "bb8ca61ed999f63fcbd5fd6eeee986ac413ccb1f8febad096079a982656de9af",
   "modules/addons/swarmz/lib/CreditPacks.php": "9418941fc8e0a7cf6086664982b62b36bbb134242010e78b5480266c77aa626f",
   "modules/addons/swarmz/lib/PromptBox.php": "4bf0e4ff14050cf999a78abba905030d4ac0d6a6fc1ff61537ebdff3c27a5283",
   "modules/addons/swarmz/lib/Updater.php": "7a90c8b30ecbbeba2330f4ab9dbe2e0e72785ebbe2056737f1493f81691217b3",
   "modules/addons/swarmz/logo.png": "16630012ccd405b6ff85cf2e81b690d3819adde0ec2c5ccecd69d2bed4f6dfe6",
   "modules/addons/swarmz/promptbox.php": "b80b69f7efb1cc2c11294008a415443cf98f7cebbe674ab8fe72581f322c012a",
-  "modules/addons/swarmz/swarmz.php": "8c71d178c85c40785a03f6a8189a55b7c6046eba1a1f98cc3bc859cf29eefeba",
+  "modules/addons/swarmz/swarmz.php": "e3b28ac04d49479ab49056e652eb366cac106211a509640a59e513af4d6ade4b",
   "modules/servers/swarmz/hooks.php": "7d495fb05ff5a7ffcad1ab1a1d2d772230b8da0f19efd786f3c35db758e7db41",
   "modules/servers/swarmz/language/english.php": "d841f08b1d50ac54e6b74a9533070b19ab48822b6f1f9a4a6e37dcbd9dee08af",
   "modules/servers/swarmz/language/french.php": "990e5ac1e40610873a1fac2479320ba979c815834be2a2f6a7001d7aeb5cea49",
   "modules/servers/swarmz/language/german.php": "81eb770f6637e26b7f10481a470c8eec620f90b58b34d2a8230b9d9e335358df",
   "modules/servers/swarmz/language/italian.php": "9d21c0244eb189ef0bff62a507c00d5b4653a681e9d690297fb4b0732c4230df",
   "modules/servers/swarmz/language/spanish.php": "7e959e089166d6a983431de030c8fd84141649f366c92edd7794c2a13581cd67",
-  "modules/servers/swarmz/lib/Api.php": "589640d5bf7f844fc7dd857c7906606416a412d092c3176ecb7da60de9bcf5cf",
+  "modules/servers/swarmz/lib/Api.php": "4dc8a1a6979a812707baebb22002859d4474568be0e2866372db517f6c6fb18e",
   "modules/servers/swarmz/lib/Exceptions.php": "01f346ab6ee71352a7fa3273bfa59a2b0a69687d2f398343ea4b2ecb58046d3a",
   "modules/servers/swarmz/lib/Helpers.php": "7efdff1dea6b0954a4ed070590736ab9b55f138cef006b3e00c535320e15c2e9",
   "modules/servers/swarmz/logo.png": "16630012ccd405b6ff85cf2e81b690d3819adde0ec2c5ccecd69d2bed4f6dfe6",
   "modules/servers/swarmz/swarmz.php": "729d077c17b4d95eca62d6273ed1702f4ade4cf4470ffe19134d2fe744fb6e5c",
   "modules/servers/swarmz/templates/overview.tpl": "243129ca6c6cdddca2072d76295209bff77df1aee05ab5ea7a24e818c3d3e319"
  },
- "version": "1.16.0"
+ "version": "1.16.1"
 }
