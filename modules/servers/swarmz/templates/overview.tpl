@@ -32,7 +32,8 @@
 {assign var="theme" value=$clientTheme|default:'classic'}
 
 {* Pool visibility — decided once, up front. *}
-{assign var="showFree"    value=$freeKind !== 'none'}
+{* A one-time free allowance that is fully used is a dead widget — hide it. *}
+{assign var="showFree"    value=$freeKind !== 'none' && !($freeKind === 'one_time' && $freePct !== null && $freePct <= 0)}
 {assign var="showMonthly" value=$monthlyCredits > 0}
 {assign var="showTopup"   value=($topupRemaining !== null && $topupRemaining > 0) || ($topupUsed !== null && $topupUsed > 0)}
 {assign var="showCloud"   value=$cloudMode !== 'none' && $cloudGrant > 0}
@@ -124,10 +125,10 @@
 .swz-t-swarmz .swz-launch { font-size: 13px !important; font-weight: 600 !important; padding: 9px 16px !important; border-radius: 6px !important; background: var(--swz-accent) !important; border: 0 !important; color: #fff !important; box-shadow: none; }
 .swz-t-swarmz .swz-sect { margin-top: 22px; }
 .swz-t-swarmz .swz-sect-title { font-size: 11px; letter-spacing: .08em; }
-.swz-t-swarmz .swz-cards { gap: 14px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
-.swz-t-swarmz .swz-card { border: 1px solid rgba(128,128,128,.16); border-radius: 8px; padding: 16px 17px 15px; background: transparent; }
+.swz-t-swarmz .swz-cards { gap: 12px; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
+.swz-t-swarmz .swz-card { border: 1px solid rgba(128,128,128,.16); border-radius: 8px; padding: 13px 14px 12px; background: transparent; gap: 7px; }
 
-.swz-t-swarmz .swz-num { font-size: 22px; font-weight: 700; }
+.swz-t-swarmz .swz-num { font-size: 19px; font-weight: 700; }
 .swz-t-swarmz .swz-bar { height: 3px; }
 .swz-t-swarmz .swz-limits { padding: 12px 2px; border: 0; border-top: 1px solid rgba(128,128,128,.18); }
 .swz-t-swarmz .swz-buy-btn { font-size: 12px; border: 1px solid var(--swz-accent); border-radius: 6px; padding: 5px 12px; }
@@ -141,10 +142,10 @@
 .swz-t-cupertino .swz-launch { font-size: 15px !important; font-weight: 600 !important; padding: 13px 30px !important; border-radius: 999px !important; background: var(--swz-accent) !important; border: 0 !important; color: #fff !important; box-shadow: none; width: auto !important; }
 .swz-t-cupertino .swz-sect { margin-top: 24px; }
 .swz-t-cupertino .swz-sect-title { text-transform: none; letter-spacing: -.01em; font-size: 16px; font-weight: 700; opacity: .9; }
-.swz-t-cupertino .swz-cards { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
-.swz-t-cupertino .swz-card { border: 0; border-radius: 22px; padding: 22px 23px 20px; background: rgba(128,128,128,.055); }
+.swz-t-cupertino .swz-cards { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 13px; }
+.swz-t-cupertino .swz-card { border: 0; border-radius: 18px; padding: 16px 17px 15px; background: rgba(128,128,128,.055); gap: 8px; }
 .swz-t-cupertino .swz-card-label { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 600; opacity: .55; }
-.swz-t-cupertino .swz-num { font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
+.swz-t-cupertino .swz-num { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
 .swz-t-cupertino .swz-bar { height: 6px; background: rgba(128,128,128,.16); }
 .swz-t-cupertino .swz-cadence { font-weight: 600; }
 .swz-t-cupertino .swz-limits { border-radius: 22px; background: rgba(128,128,128,.07); padding: 16px 21px; }
@@ -181,10 +182,10 @@
 .swz-t-carbon .swz-cards { grid-template-columns: 1fr; gap: 0; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; overflow: hidden; }
 .swz-t-carbon .swz-card { flex-direction: row; align-items: center; gap: 14px; padding: 12px 16px; background: #14171a; border-bottom: 1px solid rgba(255,255,255,.06); border-radius: 0; }
 .swz-t-carbon .swz-card:last-child { border-bottom: 0; }
-.swz-t-carbon .swz-card-label { flex: 0 0 150px; }
+.swz-t-carbon .swz-card-label { flex: 0 0 235px; }
 .swz-t-carbon .swz-bar { flex: 1 1 auto; order: 2; height: 4px; background: rgba(255,255,255,.09); }
-.swz-t-carbon .swz-num { order: 3; flex: 0 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 650; }
-.swz-t-carbon .swz-sub { order: 4; flex: 0 0 auto; max-width: 220px; text-align: right; font-size: 11px; opacity: .45; }
+.swz-t-carbon .swz-num { order: 3; flex: 0 0 118px; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 650; }
+.swz-t-carbon .swz-sub { order: 4; flex: 0 0 215px; text-align: left; font-size: 11px; opacity: .45; }
 .swz-t-carbon .swz-bar-fill { box-shadow: 0 0 10px color-mix(in srgb, var(--swz-accent) 60%, transparent); }
 .swz-t-carbon .swz-low .swz-num, .swz-t-carbon .swz-low .swz-card-label { color: #ff6369; }
 .swz-t-carbon .swz-limits { padding: 12px 16px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: #14171a; }
@@ -211,6 +212,40 @@
 .swz-t-editorial .swz-limits { border-top: 1px solid rgba(128,128,128,.25); border-bottom: 1px solid rgba(128,128,128,.25); padding: 14px 2px; }
 .swz-t-editorial .swz-buy-btn { border-bottom: 1.5px solid var(--swz-accent); border-radius: 0; padding: 0 0 1px; }
 @media (max-width: 640px) { .swz-t-editorial .swz-card { border-right: 0; border-bottom: 1px solid rgba(128,128,128,.18); } }
+
+/* ============ Dark-page adaptation (host WHMCS theme) ============ */
+/* A tiny script tags the area swz-dark when the page background is dark, so
+   the neutral grays and the modal flip without caring HOW the host's theme
+   implements dark mode. Carbon is dark by design and overrides regardless. */
+.swz-dark .swz-modal { background: #1b1e24; color: #e8eaee; box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+.swz-dark .swz-modal-close { background: rgba(255,255,255,.09); }
+.swz-dark .swz-modal-close:hover { background: rgba(255,255,255,.16); }
+.swz-dark .swz-pack { border-top-color: rgba(255,255,255,.08); }
+.swz-dark .swz-bar { background: rgba(255,255,255,.12); }
+.swz-dark .swz-limit-label, .swz-dark .swz-sub { opacity: .55; }
+
+/* ============ Modals that match each layout ============ */
+.swz-t-swarmz .swz-modal { border-radius: 10px; padding: 22px; }
+.swz-t-swarmz .swz-modal-title { font-size: 16px; }
+.swz-t-swarmz .swz-pack-order { border-radius: 7px; padding: 8px 15px; }
+.swz-t-cupertino .swz-modal { border-radius: 26px; padding: 30px 28px; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; }
+.swz-t-cupertino .swz-modal-title { font-size: 20px; letter-spacing: -.02em; }
+.swz-t-cupertino .swz-pack-order { border-radius: 999px; padding: 9px 20px; }
+.swz-t-cupertino .swz-modal-close { border-radius: 50%; }
+.swz-t-pulse .swz-modal { border-radius: 18px; border-top: 5px solid var(--swz-accent); }
+.swz-t-pulse .swz-modal-title { font-size: 20px; font-weight: 800; }
+.swz-t-pulse .swz-pack-order { border-radius: 12px; font-weight: 750; }
+.swz-t-carbon .swz-modal { background: #14171a; color: #e7e9ec; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; box-shadow: 0 24px 80px rgba(0,0,0,.65); }
+.swz-t-carbon .swz-modal-close { background: rgba(255,255,255,.09); }
+.swz-t-carbon .swz-pack { border-top-color: rgba(255,255,255,.08); }
+.swz-t-carbon .swz-pack-credits { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.swz-t-carbon .swz-pack-order { color: #0b0d0e !important; border-radius: 8px; }
+.swz-t-editorial .swz-modal { border-radius: 0; border-top: 2px solid currentColor; box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+.swz-t-editorial .swz-modal-title { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 22px; }
+.swz-t-editorial .swz-pack-name { font-family: Georgia, 'Times New Roman', serif; font-weight: 600; }
+.swz-t-editorial .swz-pack-credits { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; }
+.swz-t-editorial .swz-pack-order { border-radius: 0; background: transparent; color: var(--swz-accent) !important; border-bottom: 2px solid var(--swz-accent); padding: 4px 2px; }
+.swz-t-editorial .swz-modal-close { border-radius: 0; background: transparent; border: 1px solid currentColor; }
 </style>
 
 <div class="swz-area swz-t-{$theme}"{if $accentHex} style="--swz-accent: {$accentHex};"{/if}>
@@ -391,6 +426,28 @@
             <div class="swz-footer">{$L.need_help} <a href="{$supportUrl|escape}" target="_blank" rel="noopener">{$L.contact_support}</a>.</div>
         {/if}
     {/if}
+
+    <script>
+    (function () {
+        try {
+            var el = document.body, bg = '';
+            while (el) {
+                bg = window.getComputedStyle(el).backgroundColor || '';
+                var m = bg.match(/rgba?\(([^)]+)\)/);
+                if (m) {
+                    var p = m[1].split(',');
+                    if (p.length < 4 || parseFloat(p[3]) > 0.1) {
+                        var lum = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+                        var area = document.querySelector('.swz-area');
+                        if (area && lum < 100) { area.classList.add('swz-dark'); }
+                        break;
+                    }
+                }
+                el = el.parentElement;
+            }
+        } catch (e) { /* cosmetic only */ }
+    })();
+    </script>
 
     {* ---------- Packs modal ---------- *}
     {if $creditPacks|@count > 0}
