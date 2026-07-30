@@ -5,6 +5,45 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] - 2026-07-30
+
+Client-area revamp: themes, colors, translations, a packs modal, and the
+missing top-up balance. Plus: Sync from Swarmz is removed.
+
+### Added
+- **Four new client-area themes** next to the untouched Classic —
+  **Aurora** (soft glass + glow), **Pulse** (bold color-block hero),
+  **Carbon** (self-contained dark panel), **Editorial** (typographic,
+  boxless). Pick per host in the Reseller Console ("Client Theme").
+- **Color system**: six preset schemes (mono, orange, green, red, blue,
+  pink) plus a custom hex accent that overrides everything ("Color
+  Scheme" / "Accent Color" settings). Buttons, bars, chips, and modal
+  actions all follow the accent.
+- **Top-up packs modal**: "Buy more" now opens an in-page modal listing
+  ONLY the mapped credit packs for this product (name, credits, price,
+  one-time/monthly chip) with direct add-to-cart links — customers no
+  longer land on the WHMCS all-addons page showing unrelated addons.
+- **Extra-credits card**: purchased top-ups are finally visible —
+  remaining / lifetime purchased with a progress bar and 12-month note.
+  Previously the balance was parsed from the API but rendered nowhere, so
+  a top-up on a free plan looked like it never arrived.
+- **Translations**: the entire customer-facing panel now renders in the
+  client's WHMCS language — English, German, French, Italian, Spanish —
+  via language/<lang>.php overlays with per-key English fallback. New
+  AGENTS.md rule: every new user-facing string ships in all five files.
+
+### Removed
+- **Sync from Swarmz** (v1.12.x). In practice it adopted existing objects
+  but refused to modify them, which read as "did nothing", and the extra
+  concepts (adopt/link/preview) confused more than they helped. Manual
+  product/addon setup plus the Credit Packs mapping page is the supported
+  flow again; the sync registry table is left untouched per the AGENTS.md
+  data-safety rules.
+
+### Changed
+- Credit Packs console page: shorter, plainer setup copy (three numbered
+  steps).
+
 ## [1.12.1] - 2026-07-30
 
 Stronger recognition of hand-built infrastructure, so a sync on an existing

@@ -321,6 +321,169 @@ class Helpers
         return trim((string) self::addonSetting('Support URL', ''));
     }
 
+    /** Valid client-area themes (v1.13.0). First entry is the default. */
+    const CLIENT_THEMES = ['classic', 'aurora', 'pulse', 'carbon', 'editorial'];
+
+    /** Named accent schemes (v1.13.0). 'theme' = let the theme decide. */
+    const ACCENT_SCHEMES = [
+        'mono'   => '#111111',
+        'orange' => '#f97316',
+        'green'  => '#16a34a',
+        'red'    => '#ef4444',
+        'blue'   => '#3b82f6',
+        'pink'   => '#ec4899',
+    ];
+
+    /** The host-selected client-area theme; unknown values fall back to classic. */
+    public static function clientTheme(): string
+    {
+        $v = strtolower(trim((string) self::addonSetting('Client Theme', 'classic')));
+        return in_array($v, self::CLIENT_THEMES, true) ? $v : 'classic';
+    }
+
+    /**
+     * The accent color for the client area, as a validated hex string ('' =
+     * let the theme use its own default). Resolution order:
+     *   1. Accent Color (a custom #hex the host typed) — always wins.
+     *   2. Color Scheme (one of the six named presets).
+     */
+    public static function accentHex(): string
+    {
+        $custom = trim((string) self::addonSetting('Accent Color', ''));
+        if (preg_match('/^#?[0-9a-fA-F]{6}$/', $custom)) {
+            return '#' . ltrim($custom, '#');
+        }
+        $scheme = strtolower(trim((string) self::addonSetting('Color Scheme', 'theme')));
+        return self::ACCENT_SCHEMES[$scheme] ?? '';
+    }
+
+    /**
+     * The credit packs purchasable for a service, template-ready — ONLY mapped
+     * top-up addons (never the host's unrelated addons): assigned to the
+     * service's product, not Hidden/Retired, priced in the client's currency.
+     * Each row: name, description, credits + creditsFmt, priceFmt, cycle
+     * (free|onetime|recurring), orderUrl (direct add-to-cart deep link).
+     *
+     * @return array<int,array<string,string|int>>
+     */
+    public static function creditPackOffers(int $serviceId): array
+    {
+        try {
+            $map = self::creditPackMap();
+            if (empty($map)) {
+                return [];
+            }
+            $svc = Capsule::table('tblhosting')->where('id', $serviceId)->first(['packageid', 'userid']);
+            if (!$svc) {
+                return [];
+            }
+            $pid = (string) ((int) $svc->packageid);
+
+            // Client currency (for the price column); default currency fallback.
+            $currencyId = 0;
+            $prefix = '';
+            $suffix = '';
+            try {
+                $client = Capsule::table('tblclients')->where('id', (int) $svc->userid)->first(['currency']);
+                $currencyId = $client ? (int) $client->currency : 0;
+            } catch (\Throwable $e) {
+            }
+            try {
+                $cur = $currencyId > 0
+                    ? Capsule::table('tblcurrencies')->where('id', $currencyId)->first()
+                    : Capsule::table('tblcurrencies')->where('default', 1)->first();
+                if ($cur) {
+                    $currencyId = (int) $cur->id;
+                    $prefix = (string) ($cur->prefix ?? '');
+                    $suffix = (string) ($cur->suffix ?? '');
+                }
+            } catch (\Throwable $e) {
+            }
+
+            $out = [];
+            $rows = Capsule::table('tbladdons')->whereIn('id', array_keys($map))->get();
+            foreach ($rows as $r) {
+                if (((int) ($r->hidden ?? 0)) === 1 || ((int) ($r->retired ?? 0)) === 1) {
+                    continue;
+                }
+                $assigned = array_filter(array_map('trim', explode(',', (string) $r->packages)));
+                if (!in_array($pid, $assigned, true)) {
+                    continue;
+                }
+                $addonId = (int) $r->id;
+                $cycleRaw = strtolower((string) $r->billingcycle);
+                $price = null;
+                try {
+                    $p = Capsule::table('tblpricing')
+                        ->where('type', 'addon')->where('relid', $addonId)
+                        ->where('currency', $currencyId)->first(['monthly']);
+                    if ($p && is_numeric($p->monthly) && (float) $p->monthly >= 0) {
+                        $price = (float) $p->monthly;
+                    }
+                } catch (\Throwable $e) {
+                }
+                $out[] = [
+                    'addonId'     => $addonId,
+                    'name'        => (string) $r->name,
+                    'description' => (string) ($r->description ?? ''),
+                    'credits'     => (int) $map[$addonId],
+                    'creditsFmt'  => number_format((int) $map[$addonId]),
+                    'cycle'       => ($cycleRaw === 'free' || $price === null || $price <= 0)
+                        ? 'free'
+                        : ($cycleRaw === 'recurring' ? 'recurring' : 'onetime'),
+                    'priceFmt'    => ($price === null || $price <= 0)
+                        ? ''
+                        : $prefix . number_format($price, 2) . $suffix,
+                    // WHMCS direct cart link: adds exactly this addon.
+                    'orderUrl'    => 'cart.php?a=add&aid=' . $addonId,
+                ];
+            }
+            usort($out, static function ($a, $b) {
+                return $a['credits'] <=> $b['credits'];
+            });
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Client-area language strings for the service's client. Loads
+     * language/english.php as the base and overlays the client's language
+     * when we ship it (german / french / italian / spanish). Each file
+     * returns a flat key => string array; missing keys fall back to English
+     * so a partial translation can never blank out the UI.
+     *
+     * @param array $params the WHMCS module params (for clientsdetails)
+     * @return array<string,string>
+     */
+    public static function clientLang(array $params): array
+    {
+        $dir = dirname(__DIR__) . '/language';
+        $base = [];
+        $file = $dir . '/english.php';
+        if (is_file($file)) {
+            $loaded = include $file;
+            if (is_array($loaded)) {
+                $base = $loaded;
+            }
+        }
+        $lang = strtolower(trim((string) ($params['clientsdetails']['language'] ?? '')));
+        if ($lang === '' && isset($GLOBALS['CONFIG']['Language'])) {
+            $lang = strtolower(trim((string) $GLOBALS['CONFIG']['Language']));
+        }
+        if ($lang !== '' && $lang !== 'english' && preg_match('/^[a-z]+$/', $lang)) {
+            $file = $dir . '/' . $lang . '.php';
+            if (is_file($file)) {
+                $loaded = include $file;
+                if (is_array($loaded)) {
+                    $base = array_merge($base, $loaded);
+                }
+            }
+        }
+        return $base;
+    }
+
     /**
      * Interpret a stored yes/no addon setting robustly across WHMCS versions
      * (which may persist 'on', '1', '' or absent). No row → $default.

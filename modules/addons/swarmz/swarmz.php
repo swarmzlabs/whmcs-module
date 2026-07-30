@@ -27,7 +27,6 @@
 use WHMCS\Module\Addon\Swarmz\Console;
 use WHMCS\Module\Addon\Swarmz\CreditPacks;
 use WHMCS\Module\Addon\Swarmz\PromptBox;
-use WHMCS\Module\Addon\Swarmz\Sync;
 
 if (!defined('WHMCS')) {
     die('You cannot access this file directly.');
@@ -36,7 +35,6 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/lib/Console.php';
 require_once __DIR__ . '/lib/CreditPacks.php';
 require_once __DIR__ . '/lib/PromptBox.php';
-require_once __DIR__ . '/lib/Sync.php';
 
 /**
  * Addon configuration + the host-side settings page.
@@ -54,7 +52,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.12.1',
+        'version'     => '1.13.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
@@ -89,6 +87,26 @@ function swarmz_config()
                 'Size'         => '40',
                 'Description'  => 'Optional. A support/help link shown to customers in the client-area panel.',
             ],
+            'Client Theme' => [
+                'FriendlyName' => 'Client Theme',
+                'Type'         => 'dropdown',
+                'Options'      => 'classic,aurora,pulse,carbon,editorial',
+                'Default'      => 'classic',
+                'Description'  => 'The look of the customer-facing service panel. <strong>Classic</strong> — the neutral card layout. <strong>Aurora</strong> — soft glass with a glowing accent. <strong>Pulse</strong> — bold color-block hero with chunky cards. <strong>Carbon</strong> — sleek dark panel, works on any page. <strong>Editorial</strong> — typographic, no boxes, lots of air.',
+            ],
+            'Color Scheme' => [
+                'FriendlyName' => 'Color Scheme',
+                'Type'         => 'dropdown',
+                'Options'      => 'theme,mono,orange,green,red,blue,pink',
+                'Default'      => 'theme',
+                'Description'  => 'Accent color for the client panel. <strong>theme</strong> lets each theme use its own default; the six presets recolor buttons, bars, and highlights.',
+            ],
+            'Accent Color' => [
+                'FriendlyName' => 'Accent Color',
+                'Type'         => 'text',
+                'Size'         => '12',
+                'Description'  => 'Optional custom accent as a hex color (e.g. <code>#7c3aed</code>). When set, this overrides the Color Scheme.',
+            ],
             'Meter Cron Secret' => [
                 'FriendlyName' => 'Meter Cron Secret',
                 'Type'         => 'password',
@@ -109,7 +127,6 @@ function swarmz_activate()
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
-    Sync::ensureSchema();
     return [
         'status'      => 'success',
         'description' => 'Swarmz Reseller Console activated. Set your API Key in this module\'s settings (if not already), then open it from the sidebar to view customer plans and live usage — and grab your embeddable Prompt Box from the toolbar.',
@@ -126,7 +143,6 @@ function swarmz_upgrade($vars)
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
-    Sync::ensureSchema();
 }
 
 /**

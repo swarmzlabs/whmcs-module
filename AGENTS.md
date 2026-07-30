@@ -64,6 +64,22 @@ Stop and make it an explicit, documented, admin-confirmed action instead.
 - Read WHMCS columns defensively (`$r->col ?? default`) — schemas differ
   across WHMCS 8.x minors (`hidden`, `retired` are not universal).
 
+## Translations (user-facing text)
+
+Every string a CUSTOMER can see lives in `modules/servers/swarmz/language/`
+— `english.php` (the fallback base) plus `german.php`, `french.php`,
+`italian.php`, `spanish.php`. Each file returns a flat `key => string` array;
+`Helpers::clientLang()` overlays the client's language on English so a missing
+key can never blank the UI.
+
+**Rule: when you add or change user-facing text, update ALL five language
+files in the same change.** Never hardcode English in a template — add a key.
+Strings that embed the host's credit term use a `%s` placeholder substituted
+in the template (`{$L.key|replace:'%s':$var}`); format numbers into a variable
+with `{assign}` FIRST — chaining `|replace:...|string_format` applies the
+modifiers in the wrong order. Admin-console text (the Reseller Console) is
+host-facing and stays English.
+
 ## Practicalities
 
 - PHP 8.1+ compatible; lint everything with `php -l` (no PHP on dev Macs —
