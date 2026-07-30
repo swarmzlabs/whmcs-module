@@ -132,6 +132,15 @@ class Console
             return $out;
         }
 
+        // Dedicated "Sync from Swarmz" view — preview-first, additive builder
+        // of the WHMCS catalog (server, group, products from plans, addons
+        // from credit packs, upgrade paths) from the platform catalog.
+        if ($action === 'sync') {
+            $out .= $this->renderSync();
+            $out .= '</div>';
+            return $out;
+        }
+
         try {
             $services = $this->gatherServices();
             $usage = $this->fetchUsage($period);
@@ -382,9 +391,10 @@ class Console
         $plans = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'plans'])) . '">Plans</a>';
         $packs = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">Credit Packs</a>';
         $promptBox = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">Prompt Box</a>';
+        $sync = '<a class="swz-btn" href="' . $this->esc($this->link(['swarmz_action' => 'sync'])) . '">Sync from Swarmz</a>';
         $test = '<a class="swz-btn" href="' . $this->esc($this->link(['period' => $period, 'swarmz_action' => 'testconn'])) . '">Test connection</a>';
 
-        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $promptBox . $refresh . $test . '</div></div>';
+        return '<div class="swz-toolbar"><div class="swz-tabs">' . $btns . '</div><div class="swz-actions">' . $plans . $packs . $promptBox . $sync . $refresh . $test . '</div></div>';
     }
 
     private function renderTestConnection(string $period): string
@@ -1404,6 +1414,124 @@ class Console
         }
 
         return $back . $title . $intro . $notice . $form;
+    }
+
+    /**
+     * "Sync from Swarmz" page — preview-first, additive catalog builder.
+     *
+     * GET renders the diff (strictly read-only). POST with swz_sync_apply=1
+     * (CSRF-guarded) executes it and renders the per-item results. Nothing
+     * existing is ever modified or deleted — see Sync.php's safety model.
+     */
+    private function renderSync(): string
+    {
+        if (!class_exists('\\WHMCS\\Module\\Addon\\Swarmz\\Sync')) {
+            $path = __DIR__ . '/Sync.php';
+            if (is_file($path)) {
+                require_once $path;
+            }
+        }
+        $back = '<div class="swz-toolbar"><div class="swz-tabs"></div><div class="swz-actions">'
+            . '<a class="swz-btn" href="' . $this->esc($this->link([])) . '">&larr; Back to dashboard</a>'
+            . '</div></div>';
+        $title = '<h3 class="swz-section-title">Sync from Swarmz</h3>';
+        if (!class_exists('\\WHMCS\\Module\\Addon\\Swarmz\\Sync')) {
+            return $back . $title . $this->notice('danger', 'Sync library missing — reinstall the console addon.');
+        }
+        if ($this->apiKey === '') {
+            return $back . $title . $this->notice('warning', 'Set your API Key in the addon settings first.');
+        }
+
+        $intro = '<p class="swz-lede">Builds your WHMCS catalog from the plans and credit packs you define in your '
+            . '<strong>Swarmz dashboard</strong> — server, server group, one product per plan (priced, module wired, '
+            . 'upgrade paths opened), and one store addon per credit pack (priced, assigned, mapped). '
+            . '<strong>Additive only:</strong> nothing you built by hand is ever changed or removed; existing pieces are '
+            . 'detected and adopted. Re-run any time — it only creates what is missing.</p>';
+
+        try {
+            $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
+            $catalog = Sync::fetchCatalog($api);
+        } catch (\Throwable $e) {
+            return $back . $title . $intro . $this->notice('danger',
+                'Could not load your platform catalog: <code>' . $this->esc($this->scrub($e->getMessage())) . '</code>');
+        }
+        if (empty($catalog['plans']) && empty($catalog['packs'])) {
+            return $back . $title . $intro . $this->notice('info',
+                'Your platform account has no active plans or credit packs yet. Define them in your Swarmz dashboard '
+                . '(Settings &rarr; Plans), then come back here.');
+        }
+
+        $out = '';
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_sync_apply'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $results = Sync::apply($catalog, $this->baseUrl);
+            if (empty($results)) {
+                $out .= $this->notice('success', 'Everything is already in place — nothing to create.');
+            } else {
+                $rows = '';
+                $failed = 0;
+                foreach ($results as $r) {
+                    $status = (string) $r['status'];
+                    if ($status === 'failed') {
+                        $failed++;
+                    }
+                    $badgeClass = $status === 'failed' ? 'swz-badge-warn' : 'swz-badge-ok';
+                    $rows .= '<tr>'
+                        . '<td>' . $this->esc($r['label']) . '</td>'
+                        . '<td><span class="swz-badge ' . $badgeClass . '">' . $this->esc(ucfirst($status)) . '</span></td>'
+                        . '<td class="swz-muted">' . $this->esc($this->scrub((string) $r['detail'])) . '</td>'
+                        . '</tr>';
+                }
+                $out .= $this->notice($failed > 0 ? 'warning' : 'success',
+                    $failed > 0
+                        ? 'Sync finished with ' . $failed . ' failure(s) — see below and the Module Log (Sync.*).'
+                        : 'Sync complete. Review the results below; prices and copy can be fine-tuned on each product/addon as usual.');
+                $out .= '<div class="swz-tablewrap"><table class="swz-table">'
+                    . '<thead><tr><th>Item</th><th>Result</th><th>Detail</th></tr></thead>'
+                    . '<tbody>' . $rows . '</tbody></table></div>';
+            }
+            return $back . $title . $intro . $out;
+        }
+
+        // Preview (read-only).
+        $diff = Sync::computeDiff($catalog, $this->baseUrl);
+        $rows = '';
+        $work = 0;
+        foreach ($diff as $d) {
+            $action = (string) $d['action'];
+            if ($action !== 'ok') {
+                $work++;
+            }
+            $badge = [
+                'create' => '<span class="swz-badge swz-badge-info">Create</span>',
+                'adopt' => '<span class="swz-badge swz-badge-info">Adopt</span>',
+                'map' => '<span class="swz-badge swz-badge-info">Update mapping</span>',
+                'link-upgrade' => '<span class="swz-badge swz-badge-info">Link</span>',
+                'hide' => '<span class="swz-badge swz-badge-warn">Hide</span>',
+                'ok' => '<span class="swz-badge swz-badge-ok">In place</span>',
+            ][$action] ?? '<span class="swz-badge swz-badge-neutral">' . $this->esc($action) . '</span>';
+            $rows .= '<tr><td>' . $badge . '</td><td>' . $this->esc((string) $d['label']) . '</td></tr>';
+        }
+        $out .= '<div class="swz-tablewrap"><table class="swz-table">'
+            . '<thead><tr><th style="width:130px;">Action</th><th>Item</th></tr></thead>'
+            . '<tbody>' . $rows . '</tbody></table></div>';
+
+        if ($work === 0) {
+            $out .= $this->notice('success', 'Everything is in sync — nothing to create.');
+        } else {
+            $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+            $out .= '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'sync'])) . '">'
+                . $token
+                . '<input type="hidden" name="swz_sync_apply" value="1" />'
+                . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
+                . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Apply ' . $work . ' change(s)</button> '
+                . '<span class="swz-muted" style="margin-left:8px;">Only the rows above are touched; everything else is left exactly as it is.</span></p>'
+                . '</form>';
+        }
+
+        return $back . $title . $intro . $out;
     }
 
     /**
