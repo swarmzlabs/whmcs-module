@@ -1196,10 +1196,26 @@ function swarmz_ClientArea(array $params)
             'editorButtonLabel' => Helpers::editorButtonLabel(),
             'creditTerm'        => Helpers::creditTerm(),
             'supportUrl'        => Helpers::supportUrl(),
-            // Credit packs (v1.11.0): the addon-store link, or '' when the host
-            // has no mapped, orderable pack assigned to this product. The
-            // template renders a quiet "buy more" link only when non-empty.
+            // 5) Top-up pool (v1.13.0): purchased extra credits. Previously
+            //    parsed from the API but never surfaced — a paying customer's
+            //    top-up was invisible, especially on free plans where every
+            //    other card shows "—". Rendered as its own card when > 0.
+            'topupRemaining'    => $usage['topupRemaining'] ?? null,
+            'topupCredits'      => $usage['topupCredits']   ?? null,
+            'topupUsed'         => $usage['topupUsed']      ?? null,
+            'topupPct'          => _swarmz_pctOf($usage['topupRemaining'] ?? null, $usage['topupCredits'] ?? null),
+            // Credit packs (v1.13.0): full offer list for the in-page packs
+            // modal — ONLY mapped top-up addons assigned to this product,
+            // never the host's unrelated addons. Empty array = no buy UI.
+            'creditPacks'       => Helpers::creditPackOffers($serviceId),
+            // Legacy all-addons store link, kept for field-modified templates.
             'buyCreditsUrl'     => Helpers::creditPackStoreUrl($serviceId),
+            // Theme + accent (v1.13.0), host-configured in the console addon.
+            'clientTheme'       => Helpers::clientTheme(),
+            'accentHex'         => Helpers::accentHex(),
+            // Translated strings — client's WHMCS language (en/de/fr/it/es),
+            // English fallback per key.
+            'L'                 => Helpers::clientLang($params),
         ],
     ];
 }
