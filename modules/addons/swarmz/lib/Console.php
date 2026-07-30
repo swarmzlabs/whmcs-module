@@ -75,6 +75,22 @@ class Console
             . '</div>';
 
         if (!$this->serverLibAvailable) {
+            $srvDir = __DIR__ . '/../../../servers/swarmz';
+            if (is_dir($srvDir) && !is_file($srvDir . '/lib/Api.php')) {
+                // The folder is THERE but PHP cannot read into it (or the
+                // upload is partial). Almost always ownership/permissions
+                // after manual server surgery — say so instead of the
+                // misleading "not found".
+                return $out . $this->notice('warning',
+                    '<strong>The provisioning module exists but can&rsquo;t be read.</strong> '
+                    . '<code>modules/servers/swarmz/</code> is present, yet PHP cannot read '
+                    . '<code>lib/Api.php</code> inside it. That is almost always file ownership or '
+                    . 'permissions: everything under the module folders must be owned by the user PHP runs as, '
+                    . 'directories <code>755</code>, files <code>644</code> &mdash; never world-writable. '
+                    . 'Run <code>namei -l &hellip;/modules/servers/swarmz/lib/Api.php</code>, fix the first entry '
+                    . 'that denies read, then reload. (A partial upload can also cause this &mdash; re-upload the release ZIP.)'
+                ) . '</div>';
+            }
             return $out . $this->notice('warning',
                 'The Swarmz <strong>provisioning (server) module</strong> was not found at '
                 . '<code>modules/servers/swarmz/</code>. Install it alongside this console &mdash; '

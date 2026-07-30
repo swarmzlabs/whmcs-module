@@ -527,9 +527,20 @@ class Updater
             }
             if (is_dir($s)) {
                 self::overlayTree($s, $d, $copied, $failed);
-            } elseif (copy($s, $d)) {
+                continue;
+            }
+            // Atomic overlay: stage beside the target, then rename over it.
+            // rename() over an existing file needs only DIRECTORY write —
+            // exactly what the preflight verifies. A plain copy() also needs
+            // write permission on the existing FILE, which fails on installs
+            // whose files are owned by a different user than PHP (seen live:
+            // preflight green, then "22 file(s) could not be written").
+            $tmp = $d . '.swz-new';
+            if (copy($s, $tmp) && @rename($tmp, $d)) {
+                @chmod($d, 0644);
                 $copied++;
             } else {
+                @unlink($tmp);
                 $failed[] = str_replace(self::whmcsRoot() . '/', '', $d);
             }
         }
