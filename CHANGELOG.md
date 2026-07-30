@@ -5,6 +5,33 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] - 2026-07-30
+
+Sync from Swarmz: build the whole WHMCS catalog from the platform, so a
+partner defines plans + credit packs once in their Swarmz dashboard and never
+performs WHMCS product surgery by hand.
+
+### Added
+- **Console → Sync from Swarmz.** Preview-first, additive catalog builder:
+  - Creates the **server** (module wired, SSL, key from the console) and a
+    **server group** if none exist; creates the **"Swarmz" product group**.
+  - Creates **one product per active platform plan** — plan code wired into
+    Module Settings, priced in your default currency, auto-setup on order —
+    and opens **upgrade/downgrade paths** between all synced products.
+  - Creates **one store addon per platform credit pack** (priced, visible in
+    the client-area store, assigned to all synced products) and **maps it**
+    to its credit amount automatically. Pack changes on the platform update
+    the mapping on re-sync; a retired pack hides the addon the sync created.
+  - **Preview first, additive only, idempotent.** The GET page is strictly
+    read-only; Apply only creates what the preview showed. Existing rows are
+    never updated or deleted — a hand-built product already targeting a plan
+    code (or a single addon with a pack's exact name) is *adopted*, not
+    duplicated. Every created object is recorded in `mod_swarmz_sync_links`,
+    so re-runs converge. Each step is individually guarded and logged as
+    `Sync.*` in the Module Log.
+- Requires platform support for `credit_packs` in the `platform-plans`
+  response (partner dashboard → Settings → Plans → Credit packs).
+
 ## [1.11.1] - 2026-07-30
 
 Credit-pack visibility + free-pack fixes, straight from first partner testing.

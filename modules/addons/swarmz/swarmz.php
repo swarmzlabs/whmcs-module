@@ -27,6 +27,7 @@
 use WHMCS\Module\Addon\Swarmz\Console;
 use WHMCS\Module\Addon\Swarmz\CreditPacks;
 use WHMCS\Module\Addon\Swarmz\PromptBox;
+use WHMCS\Module\Addon\Swarmz\Sync;
 
 if (!defined('WHMCS')) {
     die('You cannot access this file directly.');
@@ -35,6 +36,7 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/lib/Console.php';
 require_once __DIR__ . '/lib/CreditPacks.php';
 require_once __DIR__ . '/lib/PromptBox.php';
+require_once __DIR__ . '/lib/Sync.php';
 
 /**
  * Addon configuration + the host-side settings page.
@@ -52,7 +54,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.11.1',
+        'version'     => '1.12.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
@@ -107,6 +109,7 @@ function swarmz_activate()
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
+    Sync::ensureSchema();
     return [
         'status'      => 'success',
         'description' => 'Swarmz Reseller Console activated. Set your API Key in this module\'s settings (if not already), then open it from the sidebar to view customer plans and live usage — and grab your embeddable Prompt Box from the toolbar.',
@@ -123,6 +126,7 @@ function swarmz_upgrade($vars)
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
+    Sync::ensureSchema();
 }
 
 /**
