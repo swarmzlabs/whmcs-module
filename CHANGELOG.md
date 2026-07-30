@@ -5,6 +5,23 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.15.0] - 2026-07-30
+
+The updater now protects hand-edited files.
+
+### Added
+- **Hand-modification guard.** Every release ships a per-file SHA-256
+  manifest (`release-manifest.json`). Before updating, the module compares
+  your live files against what your installed release shipped and lists any
+  file you (or your team) changed by hand — typically customized templates.
+  Overwriting them requires an explicit confirmation checkbox naming those
+  exact files; without it the update refuses to run, enforced server-side,
+  and the automatic backup is made either way. Installs updated from a
+  pre-manifest version see a one-time blanket confirmation instead; precise
+  per-file detection kicks in from the first manifest release onward.
+- `scripts/build-release.py` — the release build now generates the manifest
+  and the full-overlay ZIP in one step (see AGENTS.md).
+
 ## [1.14.0] - 2026-07-30
 
 Update the module without leaving WHMCS.

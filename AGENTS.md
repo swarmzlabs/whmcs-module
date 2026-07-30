@@ -71,12 +71,21 @@ checks are fail-closed and none of them may ever be weakened:
 - Version checks are cached (hours, not minutes) and degrade silently: a
   failed or rate-limited check renders nothing, never an error banner.
 
+- **Hand-modified files are never overwritten silently.** Each release
+  ships a per-file SHA-256 manifest (`release-manifest.json`); the updater
+  diffs the live install against the INSTALLED release's manifest, lists
+  every locally changed or deleted file, and refuses to proceed without an
+  explicit admin confirmation — enforced server-side, not just in the UI.
+  Never bypass or weaken this gate.
+
 Release discipline the updater depends on: every release is a **full
 overlay** of both module directories (never a partial/delta ZIP), tagged
-`vX.Y.Z`, with exactly one `.zip` asset named `swarmz-whmcs-vX.Y.Z.zip`.
-`Api::VERSION`, the addon config `version`, and the CHANGELOG move together
-in the same commit — the updater compares `Api::VERSION` against the latest
-tag.
+`vX.Y.Z`, with exactly one `.zip` asset named `swarmz-whmcs-vX.Y.Z.zip`,
+**built with `scripts/build-release.py`** — the script generates the
+manifest the hand-modification guard depends on, and the manifest is
+committed with the release bump. `Api::VERSION`, the addon config
+`version`, and the CHANGELOG move together in the same commit — the
+updater compares `Api::VERSION` against the latest tag.
 
 ## Money-path invariants
 
