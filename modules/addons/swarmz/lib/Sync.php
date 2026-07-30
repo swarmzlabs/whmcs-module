@@ -120,31 +120,11 @@ class Sync
         $out = [];
         $links = self::links();
 
-        // ── Server ───────────────────────────────────────────────────────
-        $serverId = self::resolveServerId($links);
-        if ($serverId === 0) {
-            $out[] = [
-                'action' => 'create', 'kind' => 'server', 'code' => self::SINGLETON,
-                'label' => 'Create server "Swarmz" (' . parse_url($apiBaseUrl, PHP_URL_HOST) . ', SSL, key from the console)',
-            ];
-        } else {
-            $out[] = ['action' => 'ok', 'kind' => 'server', 'code' => self::SINGLETON, 'label' => 'Server present (#' . $serverId . ')'];
-        }
-
-        // ── Server group ─────────────────────────────────────────────────
-        $groupId = self::resolveServerGroupId($links, $serverId);
-        $out[] = $groupId === 0
-            ? ['action' => 'create', 'kind' => 'servergroup', 'code' => self::SINGLETON, 'label' => 'Create server group "Swarmz" and add the server to it']
-            : ['action' => 'ok', 'kind' => 'servergroup', 'code' => self::SINGLETON, 'label' => 'Server group present (#' . $groupId . ')'];
-
-        // ── Product group ────────────────────────────────────────────────
-        $pgId = self::resolveProductGroupId($links);
-        $out[] = $pgId === 0
-            ? ['action' => 'create', 'kind' => 'productgroup', 'code' => self::SINGLETON, 'label' => 'Create product group "Swarmz"']
-            : ['action' => 'ok', 'kind' => 'productgroup', 'code' => self::SINGLETON, 'label' => 'Product group present (#' . $pgId . ')'];
-
-        // ── Products (one per active plan) ───────────────────────────────
+        // Product analysis FIRST — whether any product must be CREATED decides
+        // whether a product group is needed at all.
+        $productRows = [];
         $productIds = [];
+        $createsProducts = 0;
         foreach ($catalog['plans'] as $plan) {
             $code = (string) $plan['code'];
             $name = trim((string) ($plan['display_name'] ?? $code));
@@ -152,20 +132,62 @@ class Sync
             $linked = self::linkedId($links, 'product', $code);
             if ($linked > 0 && self::productExists($linked)) {
                 $productIds[$code] = $linked;
-                $out[] = ['action' => 'ok', 'kind' => 'product', 'code' => $code, 'label' => 'Product for plan "' . $code . '" present (#' . $linked . ')'];
+                $productRows[] = ['action' => 'ok', 'kind' => 'product', 'code' => $code, 'label' => 'Product for plan "' . $code . '" present (#' . $linked . ')'];
                 continue;
             }
-            // Adopt a manually-built Swarmz product already targeting this code.
+            // Adopt a manually-built Swarmz product already targeting this code
+            // (Module = Swarmz + this plan selected).
             $manual = self::findManualProduct($code);
             if ($manual > 0) {
                 $productIds[$code] = $manual;
-                $out[] = ['action' => 'adopt', 'kind' => 'product', 'code' => $code, 'label' => 'Adopt existing product #' . $manual . ' for plan "' . $code . '" (records the link; no changes to the product)'];
+                $productRows[] = ['action' => 'adopt', 'kind' => 'product', 'code' => $code, 'label' => 'Adopt existing product #' . $manual . ' for plan "' . $code . '" — recognized by Module = Swarmz + plan code; records the link only, the product itself is untouched'];
                 continue;
             }
-            $out[] = [
+            $createsProducts++;
+            $productRows[] = [
                 'action' => 'create', 'kind' => 'product', 'code' => $code,
                 'label' => 'Create product "' . $name . '" — plan ' . $code . ', ' . self::money($price, (string) ($plan['currency'] ?? 'USD')) . '/mo, auto-setup on order',
             ];
+        }
+
+        // ── Server ───────────────────────────────────────────────────────
+        $serverId = self::resolveServerId($links, $apiBaseUrl);
+        $serverLinked = self::linkedId($links, 'server', self::SINGLETON) > 0;
+        if ($serverId === 0) {
+            $out[] = [
+                'action' => 'create', 'kind' => 'server', 'code' => self::SINGLETON,
+                'label' => 'Create server "Swarmz" (' . parse_url($apiBaseUrl, PHP_URL_HOST) . ', SSL, key from the console)',
+            ];
+        } elseif (!$serverLinked) {
+            $out[] = ['action' => 'adopt', 'kind' => 'server', 'code' => self::SINGLETON, 'label' => 'Adopt existing server #' . $serverId . ' — recognized by the Swarmz module / API hostname; records the link only, the server is untouched'];
+        } else {
+            $out[] = ['action' => 'ok', 'kind' => 'server', 'code' => self::SINGLETON, 'label' => 'Server present (#' . $serverId . ')'];
+        }
+
+        // ── Server group ─────────────────────────────────────────────────
+        $groupId = self::resolveServerGroupId($links, $serverId);
+        $groupLinked = self::linkedId($links, 'servergroup', self::SINGLETON) > 0;
+        if ($groupId === 0) {
+            $out[] = ['action' => 'create', 'kind' => 'servergroup', 'code' => self::SINGLETON, 'label' => 'Create server group "Swarmz" and add the server to it'];
+        } elseif (!$groupLinked) {
+            $out[] = ['action' => 'adopt', 'kind' => 'servergroup', 'code' => self::SINGLETON, 'label' => 'Adopt existing server group #' . $groupId . ' (already contains the Swarmz server); records the link only'];
+        } else {
+            $out[] = ['action' => 'ok', 'kind' => 'servergroup', 'code' => self::SINGLETON, 'label' => 'Server group present (#' . $groupId . ')'];
+        }
+
+        // ── Product group — only relevant when a product must be created ─
+        $pgId = self::resolveProductGroupId($links);
+        $pgLinked = self::linkedId($links, 'productgroup', self::SINGLETON) > 0;
+        if ($createsProducts > 0 && $pgId === 0) {
+            $out[] = ['action' => 'create', 'kind' => 'productgroup', 'code' => self::SINGLETON, 'label' => 'Create product group "Swarmz" (for the new products below)'];
+        } elseif ($pgId > 0 && !$pgLinked) {
+            $out[] = ['action' => 'adopt', 'kind' => 'productgroup', 'code' => self::SINGLETON, 'label' => 'Use product group #' . $pgId . ' — where your existing Swarmz products already live; new products land next to them'];
+        } elseif ($pgId > 0) {
+            $out[] = ['action' => 'ok', 'kind' => 'productgroup', 'code' => self::SINGLETON, 'label' => 'Product group present (#' . $pgId . ')'];
+        }
+
+        foreach ($productRows as $row) {
+            $out[] = $row;
         }
 
         // ── Upgrade paths (pairwise among known products) ────────────────
@@ -195,7 +217,7 @@ class Sync
                 }
                 continue;
             }
-            $adopt = self::findAdoptableAddon($name);
+            $adopt = self::findAdoptableAddon($name, $credits);
             if ($adopt > 0) {
                 $out[] = ['action' => 'adopt', 'kind' => 'addon', 'code' => $code, 'label' => 'Adopt existing addon #' . $adopt . ' "' . $name . '" for pack "' . $code . '" and map it to ' . number_format($credits) . ' credits'];
                 continue;
@@ -256,8 +278,25 @@ class Sync
         $results = [];
         $links = self::links();
 
-        // ── Server ───────────────────────────────────────────────────────
-        $serverId = self::resolveServerId($links);
+        // How many products will actually need CREATING — decides whether a
+        // missing product group must be created at all.
+        $needsNewProducts = 0;
+        foreach ($catalog['plans'] as $plan) {
+            $code = (string) $plan['code'];
+            $linked = self::linkedId($links, 'product', $code);
+            if (($linked > 0 && self::productExists($linked)) || self::findManualProduct($code) > 0) {
+                continue;
+            }
+            $needsNewProducts++;
+        }
+
+        // ── Server: adopt (recognized by module type / API hostname) or create ─
+        $serverId = self::resolveServerId($links, $apiBaseUrl);
+        if ($serverId > 0 && self::linkedId($links, 'server', self::SINGLETON) === 0) {
+            self::link('server', self::SINGLETON, $serverId);
+            $results[] = self::res('Server "Swarmz"', 'adopted', '#' . $serverId . ' (recognized; untouched)');
+            self::log('Sync.Server.Adopted', [], ['serverid' => $serverId]);
+        }
         if ($serverId === 0) {
             try {
                 $serverId = self::createServer($apiBaseUrl);
@@ -269,9 +308,14 @@ class Sync
             }
         }
 
-        // ── Server group ─────────────────────────────────────────────────
+        // ── Server group: adopt the one containing the server, or create ─
         $links = self::links();
         $groupId = self::resolveServerGroupId($links, $serverId);
+        if ($groupId > 0 && self::linkedId($links, 'servergroup', self::SINGLETON) === 0) {
+            self::link('servergroup', self::SINGLETON, $groupId);
+            $results[] = self::res('Server group', 'adopted', '#' . $groupId . ' (already contains the server; untouched)');
+            self::log('Sync.ServerGroup.Adopted', [], ['groupid' => $groupId]);
+        }
         if ($groupId === 0 && $serverId > 0) {
             try {
                 $groupId = self::createServerGroup($serverId);
@@ -283,10 +327,16 @@ class Sync
             }
         }
 
-        // ── Product group ────────────────────────────────────────────────
+        // ── Product group: adopt where existing Swarmz products live; only
+        //    create when a product actually needs creating ─────────────────
         $links = self::links();
         $pgId = self::resolveProductGroupId($links);
-        if ($pgId === 0) {
+        if ($pgId > 0 && self::linkedId($links, 'productgroup', self::SINGLETON) === 0) {
+            self::link('productgroup', self::SINGLETON, $pgId);
+            $results[] = self::res('Product group', 'adopted', '#' . $pgId . ' (your existing Swarmz products live here; untouched)');
+            self::log('Sync.ProductGroup.Adopted', [], ['gid' => $pgId]);
+        }
+        if ($pgId === 0 && $needsNewProducts > 0) {
             try {
                 $pgId = self::createProductGroup();
                 self::link('productgroup', self::SINGLETON, $pgId);
@@ -363,7 +413,7 @@ class Sync
                 }
                 continue;
             }
-            $adopt = self::findAdoptableAddon($name);
+            $adopt = self::findAdoptableAddon($name, $credits);
             if ($adopt > 0) {
                 self::link('addon', $code, $adopt);
                 CreditPacks::set($adopt, $credits);
@@ -449,8 +499,16 @@ class Sync
         }
     }
 
-    /** The Swarmz server id: linked first, else any tblservers row of our type. */
-    private static function resolveServerId(array $links): int
+    /**
+     * The Swarmz server id — recognition order:
+     *   1. the recorded link,
+     *   2. any tblservers row with our module selected (type = 'swarmz'),
+     *   3. any server whose hostname is the Swarmz API host (api.swarmz.net
+     *      or the console's configured base) — covers a server someone
+     *      created by hand before picking the module.
+     * A recognized server is ADOPTED, never duplicated.
+     */
+    private static function resolveServerId(array $links, string $apiBaseUrl = ''): int
     {
         $linked = self::linkedId($links, 'server', self::SINGLETON);
         if ($linked > 0) {
@@ -463,6 +521,20 @@ class Sync
         }
         try {
             $row = Capsule::table('tblservers')->where('type', 'swarmz')->first(['id']);
+            if ($row) {
+                return (int) $row->id;
+            }
+        } catch (\Throwable $e) {
+        }
+        $hosts = ['api.swarmz.net'];
+        $configured = parse_url($apiBaseUrl, PHP_URL_HOST);
+        if (is_string($configured) && $configured !== '') {
+            $hosts[] = $configured;
+        }
+        try {
+            $row = Capsule::table('tblservers')
+                ->whereIn('hostname', array_values(array_unique($hosts)))
+                ->first(['id']);
             return $row ? (int) $row->id : 0;
         } catch (\Throwable $e) {
             return 0;
@@ -492,6 +564,14 @@ class Sync
         }
     }
 
+    /**
+     * The product group new products should land in — recognition order:
+     *   1. the recorded link,
+     *   2. the group your EXISTING Swarmz products already live in (new
+     *      tiers belong next to them, not in a parallel "Swarmz" group).
+     * 0 means "none yet" — the group is only created when a product
+     * actually needs creating.
+     */
     private static function resolveProductGroupId(array $links): int
     {
         $linked = self::linkedId($links, 'productgroup', self::SINGLETON);
@@ -502,6 +582,16 @@ class Sync
                 }
             } catch (\Throwable $e) {
             }
+        }
+        try {
+            $row = Capsule::table('tblproducts')
+                ->where('servertype', 'swarmz')
+                ->orderBy('id')
+                ->first(['gid']);
+            if ($row && (int) $row->gid > 0) {
+                return (int) $row->gid;
+            }
+        } catch (\Throwable $e) {
         }
         return 0;
     }
@@ -549,10 +639,16 @@ class Sync
     }
 
     /**
-     * A hand-built addon adoptable for a pack: exactly ONE unlinked addon with
-     * this exact name. Ambiguity (0 or 2+) means no adoption — we create.
+     * A hand-built addon adoptable for a pack — two deterministic signals:
+     *   1. exactly ONE unlinked addon with the pack's exact name, or
+     *   2. exactly ONE unlinked addon already MAPPED (Credit Packs page) to
+     *      exactly this pack's credit amount — the natural migration case
+     *      where the host built + mapped the pack manually before the
+     *      platform catalog existed.
+     * Ambiguity (0 or 2+ candidates on both signals) means no adoption — we
+     * create, and the admin can unmap/hide the redundant addon.
      */
-    private static function findAdoptableAddon(string $name): int
+    private static function findAdoptableAddon(string $name, int $credits): int
     {
         try {
             $linkedIds = [];
@@ -565,12 +661,26 @@ class Sync
             if (!empty($linkedIds)) {
                 $q = $q->whereNotIn('id', $linkedIds);
             }
-            $rows = $q->get(['id']);
             $ids = [];
-            foreach ($rows as $r) {
+            foreach ($q->get(['id']) as $r) {
                 $ids[] = (int) $r->id;
             }
-            return count($ids) === 1 ? $ids[0] : 0;
+            if (count($ids) === 1) {
+                return $ids[0];
+            }
+
+            // Signal 2: a single unlinked addon whose existing mapping grants
+            // exactly this many credits.
+            $byCredits = [];
+            foreach (\WHMCS\Module\Server\Swarmz\Helpers::creditPackMap() as $addonId => $mapped) {
+                if ((int) $mapped === $credits && !in_array((int) $addonId, $linkedIds, true)) {
+                    $byCredits[] = (int) $addonId;
+                }
+            }
+            if (count($byCredits) === 1 && self::addonExists($byCredits[0])) {
+                return $byCredits[0];
+            }
+            return 0;
         } catch (\Throwable $e) {
             return 0;
         }

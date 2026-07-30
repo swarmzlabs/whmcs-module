@@ -5,6 +5,27 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.1] - 2026-07-30
+
+Stronger recognition of hand-built infrastructure, so a sync on an existing
+install can never override or duplicate what's already there.
+
+### Changed
+- **Server recognition** now matches by the Swarmz module type OR by hostname
+  (`api.swarmz.net` / the console's configured API base) — a server created by
+  hand before the module was selected is adopted, not duplicated.
+- **Product group adoption**: new products land in the group your existing
+  Swarmz products already live in; a "Swarmz" product group is only created
+  when at least one product actually needs creating (and none exists).
+- **Addon adoption** gains a second deterministic signal: besides an exact
+  name match, a single unlinked addon already *mapped* to exactly the pack's
+  credit amount is adopted — the natural migration case for packs built by
+  hand before the platform catalog existed.
+- **Adoptions are recorded**: recognized servers/groups/products are linked in
+  `mod_swarmz_sync_links` on Apply (shown as "Adopt" rows in the preview), so
+  future syncs resolve them instantly and unambiguously. Adopted rows are
+  never modified — the link is the only write.
+
 ## [1.12.0] - 2026-07-30
 
 Sync from Swarmz: build the whole WHMCS catalog from the platform, so a
