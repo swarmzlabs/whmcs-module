@@ -5,6 +5,30 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.1] - 2026-07-30
+
+Credit-pack visibility + free-pack fixes, straight from first partner testing.
+
+### Fixed
+- **"Buy more credits" link gated on the wrong WHMCS flag.** The client-area
+  buy link (and the Console's Store badge) keyed off `showorder` ("Show on
+  Order Form"), which only controls the *initial checkout* flow. An addon
+  with that box unticked was labeled "Hidden" and never got a buy link — even
+  though existing customers could buy it from the client-area addon store.
+  Both now key off the actual store flags: the **Hidden** checkbox (and
+  Retired). The Console badge distinguishes *In store*, *In store + order
+  form*, *Hidden*, and *Retired*, with tooltips explaining each.
+- **Free-cycle packs never granted.** Grants were purely payment-triggered,
+  but a Free addon produces no invoice, so it could never grant. Invoice-less
+  packs (free cycle, or admin-added by hand) now grant **once on activation**
+  via a new `AddonActivated` hook, idempotency key `whmcs-ha<id>-act`, with
+  the daily sweep re-covering missed activations (last 30 days). Invoiced
+  packs are untouched — payment remains their only trigger.
+
+### Notes
+- The Credit Packs table flags Free-cycle addons with a "grants on
+  activation" badge so the different trigger is visible at a glance.
+
 ## [1.11.0] - 2026-07-28
 
 Credit packs: sell extra Swarmz credits as ordinary WHMCS Product Addons. A

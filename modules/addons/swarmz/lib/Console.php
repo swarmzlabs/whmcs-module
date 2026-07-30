@@ -1345,17 +1345,30 @@ class Console
         $body = '';
         foreach ($rows as $r) {
             $assigned = array_filter(array_map('trim', explode(',', $r['packages'])));
-            $orderable = $r['showorder']
-                ? '<span class="swz-badge swz-badge-ok">Orderable</span>'
-                : '<span class="swz-badge swz-badge-neutral">Hidden</span>';
+            // Two independent WHMCS flags, reported truthfully: `hidden` is
+            // what blocks an existing customer from buying it in the store;
+            // `showorder` only adds it to the initial-order form.
+            if ($r['retired']) {
+                $store = '<span class="swz-badge swz-badge-neutral">Retired</span>';
+            } elseif ($r['hidden']) {
+                $store = '<span class="swz-badge swz-badge-warn" title="The addon\'s Hidden checkbox is ticked — existing customers cannot buy it from the store">Hidden</span>';
+            } elseif ($r['showorder']) {
+                $store = '<span class="swz-badge swz-badge-ok">In store + order form</span>';
+            } else {
+                $store = '<span class="swz-badge swz-badge-ok" title="Buyable from the client-area addon store; not offered during initial checkout (Show on Order Form is unticked)">In store</span>';
+            }
+            $cycle = $this->esc($r['billingcycle'] !== '' ? ucfirst($r['billingcycle']) : 'One time');
+            if (strtolower($r['billingcycle']) === 'free') {
+                $cycle .= ' <span class="swz-badge swz-badge-info" title="A free addon never produces an invoice, so it grants ONCE when the addon is activated instead of on payment">grants on activation</span>';
+            }
             $mapped = $r['credits'] > 0
                 ? '<span class="swz-badge swz-badge-info">' . number_format($r['credits']) . ' credits</span>'
                 : '<span class="swz-muted">&mdash;</span>';
             $body .= '<tr>'
                 . '<td><span class="swz-strong">' . $this->esc($r['name']) . '</span>'
                 . ' <span class="swz-muted">#' . (int) $r['addon_id'] . '</span></td>'
-                . '<td>' . $this->esc($r['billingcycle'] !== '' ? ucfirst($r['billingcycle']) : 'One time') . '</td>'
-                . '<td>' . $orderable . '</td>'
+                . '<td>' . $cycle . '</td>'
+                . '<td>' . $store . '</td>'
                 . '<td class="swz-num">' . count($assigned) . '</td>'
                 . '<td>' . $mapped . '</td>'
                 . '<td class="swz-num"><input type="number" min="0" step="1" '
@@ -1378,7 +1391,9 @@ class Console
             . '<p class="swz-note">Set <strong>0</strong> (or blank) to unmap an addon. '
             . '&ldquo;Products&rdquo; is how many of your products the addon is assigned to &mdash; '
             . 'the client-area &ldquo;buy more&rdquo; link only appears for customers whose product '
-            . 'has at least one orderable mapped addon assigned.</p>'
+            . 'has at least one mapped addon that is not Hidden. Customers buy packs from the '
+            . 'client-area addon store (<code>cart.php?gid=addons</code>) or, if &ldquo;Show on '
+            . 'Order Form&rdquo; is ticked, during initial checkout too.</p>'
             . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
             . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Save mappings</button></p>'
             . '</form>';

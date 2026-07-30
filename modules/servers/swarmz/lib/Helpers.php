@@ -746,8 +746,16 @@ class Helpers
     /**
      * Client-area "buy more credits" link for a service — the WHMCS addon
      * store page — or '' when there is nothing to sell: no mapped pack whose
-     * addon is orderable (showorder) and assigned to this service's product.
-     * tbladdons.packages is a comma-separated product-id list ('' = none).
+     * addon is purchasable from the client-area store and assigned to this
+     * service's product. tbladdons.packages is a comma-separated product-id
+     * list ('' = none).
+     *
+     * Purchasable for an EXISTING customer means NOT `hidden` (the Hidden
+     * checkbox) and not `retired`. `showorder` ("Show on Order Form") only
+     * affects the initial checkout flow and is deliberately NOT required here
+     * — gating on it hid the buy link for every addon that wasn't offered at
+     * first order (found in BoostedHost testing, 2026-07-30). Columns are read
+     * defensively for older schemas.
      */
     public static function creditPackStoreUrl(int $serviceId): string
     {
@@ -763,9 +771,11 @@ class Helpers
             $pid = (string) ((int) $svc->packageid);
             $rows = Capsule::table('tbladdons')
                 ->whereIn('id', array_keys($map))
-                ->where('showorder', 1)
-                ->get(['id', 'packages']);
+                ->get();
             foreach ($rows as $r) {
+                if (((int) ($r->hidden ?? 0)) === 1 || ((int) ($r->retired ?? 0)) === 1) {
+                    continue; // not in the client-area store
+                }
                 $assigned = array_filter(array_map('trim', explode(',', (string) $r->packages)));
                 if (in_array($pid, $assigned, true)) {
                     return 'cart.php?gid=addons';
@@ -811,6 +821,12 @@ class Helpers
      * id, so the InvoicePaid grant finds nothing to top up. CreateAccount
      * calls this right after provisioning, and the daily cron calls it for
      * every active service as a safety net. Idempotent end-to-end.
+     *
+     * Also covers INVOICE-LESS packs (v1.11.1): a free-cycle addon (or one an
+     * admin added by hand) never produces an invoice, so the payment trigger
+     * can never fire. Any ACTIVE mapped addon instance with no invoice line at
+     * all, activated in the last 30 days, is granted once with the activation
+     * key — same dedupe guarantees as the paid path.
      */
     public static function grantPaidCreditPacksForService(int $serviceId): void
     {
@@ -822,10 +838,12 @@ class Helpers
             $haRows = Capsule::table('tblhostingaddons')
                 ->where('hostingid', $serviceId)
                 ->whereIn('addonid', array_keys($map))
-                ->get(['id']);
+                ->get();
             $haIds = [];
+            $haById = [];
             foreach ($haRows as $r) {
                 $haIds[] = (int) $r->id;
+                $haById[(int) $r->id] = $r;
             }
             if (empty($haIds)) {
                 return;
@@ -838,23 +856,53 @@ class Helpers
                 ->where('i.status', 'Paid')
                 ->where('i.datepaid', '>=', $since . ' 00:00:00')
                 ->get(['ii.invoiceid', 'ii.relid']);
+
+            // Which instances have ANY invoice line (paid or not)? Those are
+            // owned by the payment path; the rest are invoice-less.
+            $invoiced = [];
+            $anyLines = Capsule::table('tblinvoiceitems')
+                ->where('type', 'Addon')
+                ->whereIn('relid', $haIds)
+                ->get(['relid']);
+            foreach ($anyLines as $l) {
+                $invoiced[(int) $l->relid] = true;
+            }
         } catch (\Throwable $e) {
             return;
         }
         foreach ($items as $item) {
             self::grantOneCreditPack((int) $item->invoiceid, (int) $item->relid, $map);
         }
+        foreach ($haById as $haId => $r) {
+            if (isset($invoiced[$haId])) {
+                continue;
+            }
+            if (strtolower((string) ($r->status ?? '')) !== 'active') {
+                continue; // grant only once the addon is actually activated
+            }
+            $reg = (string) ($r->regdate ?? '');
+            if ($reg === '' || strpos($reg, '0000-00-00') === 0 || substr($reg, 0, 10) < $since) {
+                continue; // same 30-day window as the paid sweep
+            }
+            self::grantOneCreditPack(0, $haId, $map);
+        }
     }
 
     /**
-     * Grant a single (invoice, hosting-addon) credit-pack line. Resolves the
-     * parent service → tenant + key, and posts /platform-topup with the
-     * deterministic idempotency key `whmcs-inv<invoice>-ha<hostingaddon>`.
-     * The platform dedupes on it, so every caller path is repeat-safe.
+     * Grant a single credit-pack line. Resolves the parent service → tenant +
+     * key, and posts /platform-topup with a deterministic idempotency key the
+     * platform dedupes on, so every caller path is repeat-safe:
      *
-     * @param array<int,int> $map addon definition id → credits
+     *   - paid invoice line  → `whmcs-inv<invoice>-ha<hostingaddon>`
+     *     (recurring packs re-grant because each renewal is a NEW invoice id)
+     *   - invoice-less pack  → pass $invoiceId = 0 → `whmcs-ha<hostingaddon>-act`
+     *     (free-cycle / admin-added: grants exactly once, on activation)
+     *
+     * @param int            $invoiceId paid invoice id, or 0 for an
+     *                                  activation-keyed invoice-less grant
+     * @param array<int,int> $map       addon definition id → credits
      */
-    private static function grantOneCreditPack(int $invoiceId, int $haId, array $map): void
+    public static function grantOneCreditPack(int $invoiceId, int $haId, array $map): void
     {
         try {
             $ha = Capsule::table('tblhostingaddons')
@@ -894,7 +942,9 @@ class Helpers
             $body = [
                 'tenant_id'       => $tenantId,
                 'amount'          => $credits,
-                'idempotency_key' => 'whmcs-inv' . $invoiceId . '-ha' . $haId,
+                'idempotency_key' => $invoiceId > 0
+                    ? 'whmcs-inv' . $invoiceId . '-ha' . $haId
+                    : 'whmcs-ha' . $haId . '-act',
             ];
             $result = $api->postPlatform('platform-topup', $body);
             self::creditPackLog('CreditPack.Granted', $body + ['serviceid' => $serviceId], $result['body'] ?? [], $api->maskedKey());
