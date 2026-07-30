@@ -69,7 +69,17 @@ class CreditPacks
      * All WHMCS product addons with their current credit mapping (0 = unmapped).
      * Used by the Console's Credit Packs page.
      *
-     * @return array<int,array{addon_id:int,name:string,billingcycle:string,packages:string,showorder:bool,credits:int}>
+     * Visibility semantics (two independent WHMCS flags, easy to conflate):
+     *   - `hidden`     — the "Hidden" checkbox. Controls the CLIENT-AREA addon
+     *                    store (cart.php?gid=addons), i.e. whether an EXISTING
+     *                    customer can buy the pack. This is the flag that
+     *                    matters for top-ups.
+     *   - `showorder`  — "Show on Order Form". Only controls whether the addon
+     *                    is offered during the INITIAL product checkout.
+     * `retired` (newer WHMCS) removes it from sale everywhere. Columns are read
+     * defensively so older schemas without hidden/retired still work.
+     *
+     * @return array<int,array{addon_id:int,name:string,billingcycle:string,packages:string,showorder:bool,hidden:bool,retired:bool,credits:int}>
      */
     public static function listAddons(): array
     {
@@ -81,9 +91,7 @@ class CreditPacks
                 }
             }
             $out = [];
-            $rows = Capsule::table('tbladdons')
-                ->orderBy('name')
-                ->get(['id', 'name', 'billingcycle', 'packages', 'showorder']);
+            $rows = Capsule::table('tbladdons')->orderBy('name')->get();
             foreach ($rows as $r) {
                 $id = (int) $r->id;
                 $out[] = [
@@ -91,7 +99,9 @@ class CreditPacks
                     'name'         => (string) $r->name,
                     'billingcycle' => (string) $r->billingcycle,
                     'packages'     => (string) $r->packages,
-                    'showorder'    => ((int) $r->showorder) === 1,
+                    'showorder'    => ((int) ($r->showorder ?? 0)) === 1,
+                    'hidden'       => ((int) ($r->hidden ?? 0)) === 1,
+                    'retired'      => ((int) ($r->retired ?? 0)) === 1,
                     'credits'      => $mapped[$id] ?? 0,
                 ];
             }

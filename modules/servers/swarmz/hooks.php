@@ -104,6 +104,47 @@ add_hook('InvoicePaid', 1, function ($vars) {
     }
 });
 
+/**
+ * Invoice-less credit packs → grant on activation (v1.11.1).
+ *
+ * A FREE-cycle Product Addon (or one an admin adds by hand) never produces an
+ * invoice, so the payment-triggered grant above can never fire for it. When a
+ * client addon is activated and its instance has NO invoice line at all, grant
+ * the mapped pack immediately with the activation idempotency key
+ * (`whmcs-ha<id>-act`) — exactly once per instance, platform-deduped, so
+ * repeat activations can't double-grant. Instances WITH an invoice line are
+ * left strictly to the payment path. The daily sweep re-covers this hook (same
+ * key) if the API blipped at activation time.
+ *
+ * @param array $vars { id: int (tblhostingaddons.id), ... }
+ */
+add_hook('AddonActivated', 1, function ($vars) {
+    $haId = (int) ($vars['id'] ?? 0);
+    if ($haId <= 0) {
+        return;
+    }
+    try {
+        $map = Helpers::creditPackMap();
+        if (empty($map)) {
+            return;
+        }
+        $ha = Capsule::table('tblhostingaddons')->where('id', $haId)->first(['id', 'addonid']);
+        if (!$ha || !isset($map[(int) $ha->addonid])) {
+            return; // not a mapped pack
+        }
+        $hasInvoiceLine = Capsule::table('tblinvoiceitems')
+            ->where('type', 'Addon')
+            ->where('relid', $haId)
+            ->exists();
+        if ($hasInvoiceLine) {
+            return; // the payment path owns invoiced packs
+        }
+        Helpers::grantOneCreditPack(0, $haId, $map);
+    } catch (\Throwable $e) {
+        _swarmz_hookLog('AddonActivated.CreditPacks.Error', ['hostingaddon' => $haId], ['error' => $e->getMessage()]);
+    }
+});
+
 // =========================================================================
 // Internal helpers (file-local). Prefixed to avoid colliding with the server
 // module's own _swarmz_* helpers (different file, no shared scope at runtime,
