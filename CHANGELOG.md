@@ -5,6 +5,22 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.16.2] - 2026-07-31
+
+### Fixed
+- **Updater writes are now atomic and match the preflight.** Files are
+  staged next to the target and renamed over it — needing only the
+  directory write access the preflight verifies. The old in-place copy
+  also needed write permission on each existing FILE, so installs whose
+  files were owned by a different user than PHP passed preflight and then
+  failed with "N file(s) could not be written". Verified in a harness
+  running as `nobody` against root-owned files.
+- **Honest error when the server module is unreadable.** If
+  `modules/servers/swarmz/` exists but PHP can't read `lib/Api.php`
+  (ownership/permissions after manual changes, or a partial upload), the
+  console now explains that and how to fix it, instead of claiming the
+  module is "not found".
+
 ## [1.16.1] - 2026-07-31
 
 ### Fixed
