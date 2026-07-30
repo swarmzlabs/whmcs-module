@@ -60,6 +60,9 @@ class Updater
     /** The two directories a release may write into (relative to WHMCS root). */
     const ALLOWED_PREFIXES = ['modules/servers/swarmz/', 'modules/addons/swarmz/'];
 
+    /** Per-release file manifest, shipped inside every release (>= 1.15.0). */
+    const MANIFEST_REL = 'modules/addons/swarmz/release-manifest.json';
+
     // ────────────────────────────────────────────────────────────── version
 
     /** The running module version (the server module's Api::VERSION). */
@@ -102,6 +105,69 @@ class Updater
             return false;
         }
         return version_compare((string) $info['version'], self::currentVersion(), '>');
+    }
+
+    // ─────────────────────────────────────────────── local modifications
+
+    /**
+     * The manifest shipped with the INSTALLED version, or null when the
+     * install predates manifests (< 1.15.0) or the file is unreadable.
+     */
+    public static function installedManifest(): ?array
+    {
+        $root = self::whmcsRoot();
+        if ($root === '') {
+            return null;
+        }
+        $path = $root . '/' . self::MANIFEST_REL;
+        if (!is_file($path)) {
+            return null;
+        }
+        $data = json_decode((string) @file_get_contents($path), true);
+        if (!is_array($data) || empty($data['files']) || !is_array($data['files'])) {
+            return null;
+        }
+        return $data;
+    }
+
+    /**
+     * Compare the live module files against the installed release manifest.
+     *
+     *   ['manifest' => bool,          // false = no manifest (pre-1.15 install)
+     *    'modified' => [rel paths],   // content differs from what shipped
+     *    'missing'  => [rel paths]]   // shipped file deleted locally
+     *
+     * Any entry in modified/missing means a human changed this install by
+     * hand; performUpdate() refuses to overwrite those without the admin's
+     * explicit confirmation — see the update page.
+     */
+    public static function detectLocalModifications(): array
+    {
+        $out = ['manifest' => false, 'modified' => [], 'missing' => []];
+        $manifest = self::installedManifest();
+        if ($manifest === null) {
+            return $out;
+        }
+        $out['manifest'] = true;
+        $root = self::whmcsRoot();
+        foreach ($manifest['files'] as $rel => $hash) {
+            $rel = (string) $rel;
+            if (!is_string($hash) || !self::entryAllowed($rel) || $rel === self::MANIFEST_REL) {
+                continue;
+            }
+            $path = $root . '/' . $rel;
+            if (!is_file($path)) {
+                $out['missing'][] = $rel;
+                continue;
+            }
+            $live = hash_file('sha256', $path);
+            if (!is_string($live) || !hash_equals(strtolower($hash), strtolower($live))) {
+                $out['modified'][] = $rel;
+            }
+        }
+        sort($out['modified']);
+        sort($out['missing']);
+        return $out;
     }
 
     // ──────────────────────────────────────────────────────────── preflight
@@ -158,9 +224,26 @@ class Updater
      * touched until the archive is fully downloaded, digest-verified, and
      * path-validated; the backup exists before the first overwrite.
      */
-    public static function performUpdate(): array
+    public static function performUpdate(bool $confirmOverwrite = false): array
     {
         $from = self::currentVersion();
+
+        // HAND-MODIFICATION GUARD (v1.15.0): files a human changed on this
+        // install are never overwritten without explicit confirmation. With
+        // no installed manifest (pre-1.15) we cannot prove nothing was
+        // modified, so the same confirmation is required once. Enforced here
+        // server-side regardless of what the UI submitted.
+        $local = self::detectLocalModifications();
+        $needsConfirm = !$local['manifest']
+            || !empty($local['modified'])
+            || !empty($local['missing']);
+        if ($needsConfirm && !$confirmOverwrite) {
+            $what = $local['manifest']
+                ? ('Locally modified files detected: ' . implode(', ', array_slice(array_merge($local['modified'], $local['missing']), 0, 10)))
+                : 'This install has no release manifest, so local modifications cannot be ruled out';
+            return ['ok' => false, 'error' => $what . '. Tick the confirmation box on the update page to proceed (a full backup is made either way).'];
+        }
+
         $info = self::check(true);
         if (empty($info['ok'])) {
             return ['ok' => false, 'error' => 'Could not reach the release feed: ' . ($info['error'] ?? 'unknown')];

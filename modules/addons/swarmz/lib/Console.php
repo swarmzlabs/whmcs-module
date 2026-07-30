@@ -1235,7 +1235,7 @@ class Console
             if (function_exists('check_token')) {
                 check_token('WHMCS.admin.default');
             }
-            $result = Updater::performUpdate();
+            $result = Updater::performUpdate(isset($_POST['swz_confirm_overwrite']));
             if (!empty($result['ok'])) {
                 return $out . $this->notice('success',
                     '<strong>Updated to v' . $this->esc($result['to']) . '.</strong> '
@@ -1295,11 +1295,53 @@ class Console
             return $out;
         }
 
+        // Hand-modification guard (v1.15.0): list files this install has
+        // changed relative to what its release shipped; overwriting them
+        // requires the explicit checkbox below (enforced server-side too).
+        $local = Updater::detectLocalModifications();
+        $touched = array_merge($local['modified'], $local['missing']);
+        $needsConfirm = !$local['manifest'] || !empty($touched);
+        if ($local['manifest'] && empty($touched)) {
+            $out .= $this->notice('success', 'No local modifications detected &mdash; every module file matches the installed release, so updating is safe.');
+        } elseif ($local['manifest']) {
+            $rows = '';
+            foreach ($local['modified'] as $f) {
+                $rows .= '<tr><td><code>' . $this->esc($f) . '</code></td><td><span class="swz-badge swz-badge-warn">Modified locally</span></td></tr>';
+            }
+            foreach ($local['missing'] as $f) {
+                $rows .= '<tr><td><code>' . $this->esc($f) . '</code></td><td><span class="swz-badge swz-badge-warn">Deleted locally</span></td></tr>';
+            }
+            $out .= $this->notice('warning',
+                '<strong>' . count($touched) . ' file(s) on this install differ from what the installed release shipped</strong> '
+                . '&mdash; usually hand-edited templates or custom tweaks. Updating overwrites them with the new versions. '
+                . 'They are included in the automatic backup, but re-applying your changes afterwards is on you.');
+            $out .= '<div class="swz-tablewrap"><table class="swz-table">'
+                . '<thead><tr><th>File</th><th></th></tr></thead><tbody>' . $rows . '</tbody></table></div>';
+        } else {
+            $out .= $this->notice('info',
+                'This install predates per-file change tracking, so local modifications cannot be ruled out automatically. '
+                . 'Everything is backed up before the update; confirm below to proceed. From the next version on, '
+                . 'hand-edited files are detected and listed here individually.');
+        }
+
         $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $confirm = '';
+        $btnAttrs = '';
+        if ($needsConfirm) {
+            $confirm = '<label style="display:flex;align-items:flex-start;gap:8px;margin:14px 0 0;font-size:12.5px;cursor:pointer;">'
+                . '<input type="checkbox" name="swz_confirm_overwrite" value="1" style="margin-top:2px;" '
+                . 'onchange="document.getElementById(\'swz-upd-btn\').disabled=!this.checked;" />'
+                . '<span>I understand the files listed above will be overwritten by the new release (a full backup is made first).</span>'
+                . '</label>';
+            $btnAttrs = ' id="swz-upd-btn" disabled';
+        } else {
+            $btnAttrs = ' id="swz-upd-btn"';
+        }
         $out .= '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'update'])) . '">'
             . $token
             . '<input type="hidden" name="swz_do_update" value="1" />'
-            . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
+            . $confirm
+            . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn"' . $btnAttrs . ' '
             . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Update to v' . $this->esc((string) $info['version']) . '</button> '
             . '<span class="swz-muted" style="margin-left:8px;">Downloads the signed release, verifies its SHA-256 checksum, backs up the current files, then installs. Settings and data are untouched.</span></p>'
             . '</form>';
