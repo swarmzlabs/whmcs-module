@@ -5,6 +5,20 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.6] - 2026-07-31
+
+### Changed
+- **Ordering a pack goes straight to the invoice.** Cart handoffs kept
+  colliding with themed order forms (deep links rewritten; a session-
+  seeded cart still landed on the order form's start page). The module
+  now places the addon order itself via the AddOrder API — attached to
+  the service, on the service's own payment method — and sends the
+  customer directly to the invoice payment page, which renders the same
+  on every theme. Fewer clicks: Order → pay. A $0 pack returns to the
+  service page (its activation grant needs no invoice). Every order is
+  logged as BuyPack.Ordered in the Module Log; failures surface a plain
+  message instead of a broken checkout.
+
 ## [1.17.5] - 2026-07-31
 
 ### Fixed

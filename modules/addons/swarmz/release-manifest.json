@@ -8,19 +8,19 @@
   "modules/addons/swarmz/lib/Updater.php": "24732217e6a6047be5949f97fb872673810041eb24186e161cbfe9a2d41f3678",
   "modules/addons/swarmz/logo.png": "16630012ccd405b6ff85cf2e81b690d3819adde0ec2c5ccecd69d2bed4f6dfe6",
   "modules/addons/swarmz/promptbox.php": "b80b69f7efb1cc2c11294008a415443cf98f7cebbe674ab8fe72581f322c012a",
-  "modules/addons/swarmz/swarmz.php": "9dca1316112bf875f1775a16befed873c504b1ec396a15e9d50ec07ac6058136",
+  "modules/addons/swarmz/swarmz.php": "a819280ca41b385357a3ce1d5aeff6ca2069b8c8bba605bfeee8c50410678892",
   "modules/servers/swarmz/hooks.php": "7d495fb05ff5a7ffcad1ab1a1d2d772230b8da0f19efd786f3c35db758e7db41",
   "modules/servers/swarmz/language/english.php": "04c4ae64f33c68878db19ce01e50d5b2d33e8b01795ac667062a0b71b1033417",
   "modules/servers/swarmz/language/french.php": "ecceaab447e7242a5c509190b3ba7c9f4cc818771dc38d26adf1700e04ebedee",
   "modules/servers/swarmz/language/german.php": "8f6b944d1d5b57abfb8f284eb6389cfcea21f7c11cbfff2265ce1f55757abbd6",
   "modules/servers/swarmz/language/italian.php": "48ad0327576946264e74b70dd618a42cdf965f80b81d4983ced2c4123343e966",
   "modules/servers/swarmz/language/spanish.php": "5e3a37dda403288d4c369443693ef6aa7e03c7b8b269ec51bc7259c54a8b44c1",
-  "modules/servers/swarmz/lib/Api.php": "3e17394f1b93feff1b561ac72fbd04bb054393e26dd1e7bf90c4ead6dc3416f4",
+  "modules/servers/swarmz/lib/Api.php": "811c79ddc59d33f2154efa1999502d62148b16286d9020b68099d17983de9ca9",
   "modules/servers/swarmz/lib/Exceptions.php": "01f346ab6ee71352a7fa3273bfa59a2b0a69687d2f398343ea4b2ecb58046d3a",
   "modules/servers/swarmz/lib/Helpers.php": "b23e9213f35c10197e1056d0fc29cfa3a76f52071719a957f5849c06d38b8b8e",
   "modules/servers/swarmz/logo.png": "16630012ccd405b6ff85cf2e81b690d3819adde0ec2c5ccecd69d2bed4f6dfe6",
-  "modules/servers/swarmz/swarmz.php": "7b97c59b008619f9f4c8140136109833170b420ab864233c648477f6235881d4",
+  "modules/servers/swarmz/swarmz.php": "a1ecd6acbf1d8dd555bc928b84882a48d56b349f0fb585e1c08e1c9e04f7cac3",
   "modules/servers/swarmz/templates/overview.tpl": "65c3cd8f963355d5b7345f0cb1fb3cfa76d16e61c907761860ae75ef5edb870b"
  },
- "version": "1.17.5"
+ "version": "1.17.6"
 }

@@ -508,62 +508,69 @@ function swarmz_buypack(array $params)
         return 'Swarmz: that pack is not available for this service.';
     }
 
-    // Put it in the cart session (deduped), attached to this service so the
-    // addon provisions under it — which is also what the credit grant keys on.
-    //
-    // CRITICAL: WHMCS calls session_write_close() early in client-area
-    // requests to release the session lock, so a plain $_SESSION write from a
-    // module action mutates an in-memory copy that is never persisted — the
-    // cart looked seeded but arrived empty on the next page (v1.17.4 bug).
-    // Re-open the session before writing and close it explicitly after.
-    $reopened = false;
-    if (function_exists('session_status') && session_status() !== PHP_SESSION_ACTIVE) {
-        @session_start();
-        $reopened = true;
+    // DIRECT ORDER (v1.17.6). Cart handoffs kept breaking on themed order
+    // forms: deep links get rewritten (Lagom → generic addons list), and the
+    // session-seeded cart landed customers on the order form's start page.
+    // So the module now places the addon order itself via the AddOrder API —
+    // attached to this service, on the service's own payment method — and
+    // sends the customer straight to the INVOICE, which renders the same on
+    // every theme. Fewer clicks, nothing for an order form to intercept.
+    $clientId = (int) ($params['userid'] ?? ($params['clientsdetails']['userid'] ?? 0));
+    if ($clientId <= 0 || !function_exists('localAPI')) {
+        return 'Swarmz: ordering is unavailable right now. Please contact support.';
     }
-    if (!isset($_SESSION['cart']) || !is_array($_SESSION['cart'])) {
-        $_SESSION['cart'] = [];
+    $payMethod = '';
+    try {
+        $svc = \WHMCS\Database\Capsule::table('tblhosting')->where('id', $serviceId)->first(['paymentmethod', 'userid']);
+        if (!$svc || (int) $svc->userid !== $clientId) {
+            return 'Swarmz: that service does not belong to this account.';
+        }
+        $payMethod = (string) $svc->paymentmethod;
+    } catch (\Throwable $e) {
+        return 'Swarmz: could not look up the service. Please try again.';
     }
-    if (!isset($_SESSION['cart']['addons']) || !is_array($_SESSION['cart']['addons'])) {
-        $_SESSION['cart']['addons'] = [];
-    }
-    $already = false;
-    foreach ($_SESSION['cart']['addons'] as $a) {
-        if (is_array($a) && (int) ($a['id'] ?? 0) === $packId && (int) ($a['serviceid'] ?? 0) === $serviceId) {
-            $already = true;
-            break;
+    if ($payMethod === '') {
+        try {
+            $gw = \WHMCS\Database\Capsule::table('tblpaymentgateways')
+                ->where('setting', 'name')->orderBy('order')->first(['gateway']);
+            $payMethod = $gw ? (string) $gw->gateway : '';
+        } catch (\Throwable $e) {
         }
     }
-    if (!$already) {
-        $_SESSION['cart']['addons'][] = ['id' => $packId, 'serviceid' => $serviceId];
-    }
-    if ($reopened) {
-        @session_write_close();
-    }
 
-    // _swarmz_redirect() only accepts absolute URLs (it guards the SSO path
-    // against open-redirect junk), so a bare 'cart.php?a=view' fell through
-    // silently and WHMCS rendered its "Action Completed Successfully!" page
-    // instead of the cart (v1.17.3 bug). Resolve the installation's SystemURL
-    // and send a 303 — the correct POST-to-GET redirect, which also stops the
-    // browser's "confirm form resubmission" prompt on reload.
+    $resp = localAPI('AddOrder', [
+        'clientid'      => $clientId,
+        'paymentmethod' => $payMethod,
+        'addonid'       => $packId,
+        'serviceid'     => $serviceId,
+    ]);
+    if (!is_array($resp) || ($resp['result'] ?? '') !== 'success') {
+        $why = is_array($resp) ? (string) ($resp['message'] ?? 'unknown error') : 'unknown error';
+        _swarmz_logModuleCall('BuyPack.Failed', ['pack' => $packId, 'serviceid' => $serviceId], ['error' => $why]);
+        return 'Swarmz: could not create the order (' . $why . '). Please try again or contact support.';
+    }
+    _swarmz_logModuleCall('BuyPack.Ordered', ['pack' => $packId, 'serviceid' => $serviceId], [
+        'orderid' => $resp['orderid'] ?? null, 'invoiceid' => $resp['invoiceid'] ?? null,
+    ]);
+
+    // Straight to payment. A $0 pack produces no invoice — back to the
+    // service page, where the activation-grant path takes over.
     $base = '';
     try {
         if (class_exists('\\WHMCS\\Config\\Setting')) {
             $base = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
         }
     } catch (\Throwable $e) {
-        // fall through to the CONFIG global
     }
     if ($base === '' && isset($GLOBALS['CONFIG']['SystemURL'])) {
         $base = rtrim((string) $GLOBALS['CONFIG']['SystemURL'], '/');
     }
+    $invoiceId = (int) ($resp['invoiceid'] ?? 0);
+    $target = $invoiceId > 0
+        ? 'viewinvoice.php?id=' . $invoiceId
+        : 'clientarea.php?action=productdetails&id=' . $serviceId;
     if (!headers_sent()) {
-        if (preg_match('#^https?://#i', $base)) {
-            header('Location: ' . $base . '/cart.php?a=view', true, 303);
-        } else {
-            header('Location: cart.php?a=view', true, 303);
-        }
+        header('Location: ' . (preg_match('#^https?://#i', $base) ? $base . '/' : '') . $target, true, 303);
         exit;
     }
     return '';
