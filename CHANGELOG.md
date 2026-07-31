@@ -5,6 +5,21 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.18.0] - 2026-07-31
+
+### Added
+- **Checkout flow setting** (Console → Appearance): choose how the packs
+  popup checks out — **Direct to invoice** (module places the order, the
+  customer pays the invoice; works with every theme; recommended default),
+  **Standard WHMCS cart** (classic cart deep link for stock order forms),
+  or **Lagom Smart Order Form** (Lagom's addon store page — per its docs,
+  Lagom routes ordering through order.php?m=OneStepOrder and offers no
+  per-addon deep link, so its own store page is the correct target).
+- **Visible confirmation for free packs**: a $0 pack is auto-accepted so
+  it activates (and its credits grant) immediately, and the customer
+  returns to the panel with a translated "Top-up added" notice instead of
+  a bare WHMCS order screen.
+
 ## [1.17.6] - 2026-07-31
 
 ### Changed

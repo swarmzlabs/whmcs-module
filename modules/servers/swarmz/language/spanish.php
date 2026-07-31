@@ -65,4 +65,5 @@ return [
     'contact_support' => 'Contactar con soporte',
     'no_pools' => 'Este plan no incluye créditos.',
     'updates_fast' => 'Los saldos se actualizan segundos después de la compra.',
+    'pack_added' => 'Recarga añadida — los créditos se están aplicando a tu espacio ahora.',
 ];

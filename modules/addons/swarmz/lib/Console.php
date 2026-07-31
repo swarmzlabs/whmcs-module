@@ -1658,6 +1658,33 @@ class Console
     }
 
     /**
+     * "Checkout flow" chooser on the Appearance page — how the client-area
+     * packs popup checks out. One radio card per flow; the value drives
+     * swarmz_buypack()'s handoff.
+     */
+    private function renderCheckoutFlowSection(): string
+    {
+        $cur = \WHMCS\Module\Server\Swarmz\Helpers::checkoutFlow();
+        $flows = [
+            'invoice' => ['Direct to invoice', 'The module places the order and the customer pays the invoice. Works with every theme and order form; free packs complete instantly. Recommended.'],
+            'standard' => ['Standard WHMCS cart', 'Classic cart deep link (cart.php). For stock WHMCS order forms. Themed order forms may reroute it.'],
+            'lagom' => ['Lagom Smart Order Form', 'Sends customers to Lagom&rsquo;s addon store page to pick the pack and check out in Lagom&rsquo;s own flow (Lagom has no per-addon link).'],
+        ];
+        $cards = '';
+        foreach ($flows as $key => $info) {
+            $on = $key === $cur ? ' swz-on' : '';
+            $cards .= '<label class="swz-theme' . $on . '" style="min-height:auto;">'
+                . '<input type="radio" name="swz_flow" value="' . $this->esc($key) . '"' . ($key === $cur ? ' checked' : '') . ' onchange="swzSel(this)" />'
+                . '<p class="swz-theme-name" style="margin-top:0;">' . $info[0] . '</p>'
+                . '<p class="swz-theme-desc">' . $info[1] . '</p>'
+                . '</label>';
+        }
+        return '<div class="swz-section"><h3 class="swz-section-title">Checkout flow</h3>'
+            . '<p class="swz-section-sub">How the &ldquo;Buy more&rdquo; popup checks out a pack. Pick the one matching your order form.</p>'
+            . '<div class="swz-themes">' . $cards . '</div></div>';
+    }
+
+    /**
      * Persist one console-managed addon setting (same storage the WHMCS
      * module-settings form uses), so Helpers::addonSetting() keeps reading it.
      */
@@ -1700,9 +1727,14 @@ class Console
             }
             $hex = trim((string) ($_POST['swz_hex'] ?? ''));
             $hex = preg_match('/^#?[0-9a-fA-F]{6}$/', $hex) ? ('#' . ltrim($hex, '#')) : '';
+            $flow = strtolower(trim((string) ($_POST['swz_flow'] ?? 'invoice')));
+            if (!in_array($flow, \WHMCS\Module\Server\Swarmz\Helpers::CHECKOUT_FLOWS, true)) {
+                $flow = 'invoice';
+            }
             $this->saveAddonSetting('Client Theme', $theme);
             $this->saveAddonSetting('Color Scheme', $scheme);
             $this->saveAddonSetting('Accent Color', $hex);
+            $this->saveAddonSetting('Checkout Flow', $flow);
             $saved = $this->notice('success', 'Saved. Your customers see the new look on their next page load.');
         }
 
@@ -1769,6 +1801,7 @@ class Console
             . '<p class="swz-section-sub">The rainbow dot lets each layout use its own default. Or type an exact brand color &mdash; it wins over the dots.</p>'
             . '<div class="swz-swatches">' . $swatches
             . '<input class="swz-hex" type="text" name="swz_hex" value="' . $this->esc($curHex) . '" placeholder="#7c3aed" maxlength="7" /></div></div>'
+            . $this->renderCheckoutFlowSection()
             . '<button type="submit" class="swz-save">Save appearance</button>'
             . '</form>'
             . '<script>function swzSel(i){var n=i.closest(".swz-themes").querySelectorAll(".swz-theme");for(var k=0;k<n.length;k++){n[k].classList.remove("swz-on");}i.closest(".swz-theme").classList.add("swz-on");}'

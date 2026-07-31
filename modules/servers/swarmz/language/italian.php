@@ -65,4 +65,5 @@ return [
     'contact_support' => 'Contatta l’assistenza',
     'no_pools' => 'Questo piano non include crediti.',
     'updates_fast' => 'I saldi si aggiornano pochi secondi dopo l’acquisto.',
+    'pack_added' => 'Ricarica aggiunta — i crediti vengono accreditati ora sul tuo workspace.',
 ];

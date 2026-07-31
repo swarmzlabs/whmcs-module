@@ -508,13 +508,48 @@ function swarmz_buypack(array $params)
         return 'Swarmz: that pack is not available for this service.';
     }
 
-    // DIRECT ORDER (v1.17.6). Cart handoffs kept breaking on themed order
-    // forms: deep links get rewritten (Lagom → generic addons list), and the
-    // session-seeded cart landed customers on the order form's start page.
-    // So the module now places the addon order itself via the AddOrder API —
-    // attached to this service, on the service's own payment method — and
-    // sends the customer straight to the INVOICE, which renders the same on
-    // every theme. Fewer clicks, nothing for an order form to intercept.
+    // CHECKOUT FLOW (v1.18.0) — host-selected on the console Appearance
+    // page, because no single handoff suits every install:
+    //   invoice  (default) — the module places the order via AddOrder and
+    //              sends the customer to the invoice. Theme-proof; free packs
+    //              complete instantly and return with a confirmation.
+    //   standard — classic cart deep link for stock WHMCS order forms.
+    //   lagom    — Lagom Smart Order Form's addons page (it rewrites cart
+    //              deep links and has no per-addon URL, so the customer picks
+    //              the pack in Lagom's own checkout).
+    $flow = Helpers::checkoutFlow();
+
+    $base = '';
+    try {
+        if (class_exists('\\WHMCS\\Config\\Setting')) {
+            $base = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
+        }
+    } catch (\Throwable $e) {
+    }
+    if ($base === '' && isset($GLOBALS['CONFIG']['SystemURL'])) {
+        $base = rtrim((string) $GLOBALS['CONFIG']['SystemURL'], '/');
+    }
+    $abs = static function (string $path) use ($base): string {
+        return (preg_match('#^https?://#i', $base) ? $base . '/' : '') . $path;
+    };
+
+    if ($flow === 'standard') {
+        if (!headers_sent()) {
+            header('Location: ' . $abs('cart.php?a=add&aid=' . $packId), true, 303);
+            exit;
+        }
+        return '';
+    }
+    if ($flow === 'lagom') {
+        // Lagom's addon store (order.php?spage=addons, pretty URL /order/addons).
+        if (!headers_sent()) {
+            header('Location: ' . $abs('order.php?spage=addons'), true, 303);
+            exit;
+        }
+        return '';
+    }
+
+    // ── invoice flow ─────────────────────────────────────────────────────
     $clientId = (int) ($params['userid'] ?? ($params['clientsdetails']['userid'] ?? 0));
     if ($clientId <= 0 || !function_exists('localAPI')) {
         return 'Swarmz: ordering is unavailable right now. Please contact support.';
@@ -549,28 +584,30 @@ function swarmz_buypack(array $params)
         _swarmz_logModuleCall('BuyPack.Failed', ['pack' => $packId, 'serviceid' => $serviceId], ['error' => $why]);
         return 'Swarmz: could not create the order (' . $why . '). Please try again or contact support.';
     }
+    $orderId = (int) ($resp['orderid'] ?? 0);
+    $invoiceId = (int) ($resp['invoiceid'] ?? 0);
     _swarmz_logModuleCall('BuyPack.Ordered', ['pack' => $packId, 'serviceid' => $serviceId], [
-        'orderid' => $resp['orderid'] ?? null, 'invoiceid' => $resp['invoiceid'] ?? null,
+        'orderid' => $orderId, 'invoiceid' => $invoiceId, 'flow' => $flow,
     ]);
 
-    // Straight to payment. A $0 pack produces no invoice — back to the
-    // service page, where the activation-grant path takes over.
-    $base = '';
-    try {
-        if (class_exists('\\WHMCS\\Config\\Setting')) {
-            $base = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
+    if ($invoiceId > 0) {
+        // Paid pack → straight to payment.
+        if (!headers_sent()) {
+            header('Location: ' . $abs('viewinvoice.php?id=' . $invoiceId), true, 303);
+            exit;
         }
-    } catch (\Throwable $e) {
+        return '';
     }
-    if ($base === '' && isset($GLOBALS['CONFIG']['SystemURL'])) {
-        $base = rtrim((string) $GLOBALS['CONFIG']['SystemURL'], '/');
+
+    // Free pack: nothing to pay. Accept the order so the addon activates NOW
+    // (the activation grant fires immediately instead of waiting for an admin
+    // or the daily sweep), then return to the panel with a visible confirmation.
+    if ($orderId > 0) {
+        $acc = localAPI('AcceptOrder', ['orderid' => $orderId]);
+        _swarmz_logModuleCall('BuyPack.AutoAccepted', ['orderid' => $orderId], ['result' => $acc['result'] ?? 'n/a']);
     }
-    $invoiceId = (int) ($resp['invoiceid'] ?? 0);
-    $target = $invoiceId > 0
-        ? 'viewinvoice.php?id=' . $invoiceId
-        : 'clientarea.php?action=productdetails&id=' . $serviceId;
     if (!headers_sent()) {
-        header('Location: ' . (preg_match('#^https?://#i', $base) ? $base . '/' : '') . $target, true, 303);
+        header('Location: ' . $abs('clientarea.php?action=productdetails&id=' . $serviceId . '&packok=1'), true, 303);
         exit;
     }
     return '';
@@ -1224,6 +1261,10 @@ function swarmz_ClientArea(array $params)
     // target="_blank".
     $ssoUrl = 'clientarea.php?action=productdetails&id=' . $serviceId . '&modop=custom&a=launch';
 
+    // A just-completed free-pack order redirects back with packok=1 —
+    // surface a visible confirmation in the panel (v1.18.0).
+    $packNotice = isset($_REQUEST['packok']) && (string) $_REQUEST['packok'] === '1';
+
     // Pull usage (best-effort; on failure, render placeholders).
     $usage = swarmz_UsageUpdate($params);
 
@@ -1315,6 +1356,7 @@ function swarmz_ClientArea(array $params)
             // Legacy all-addons store link, kept for field-modified templates.
             'buyCreditsUrl'     => Helpers::creditPackStoreUrl($serviceId),
             // Theme + accent (v1.13.0), host-configured in the console addon.
+            'packNotice'        => $packNotice,
             'clientTheme'       => Helpers::clientTheme(),
             'accentHex'         => Helpers::accentHex(),
             // Translated strings — client's WHMCS language (en/de/fr/it/es),
