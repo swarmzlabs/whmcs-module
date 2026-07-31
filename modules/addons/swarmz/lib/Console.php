@@ -1503,9 +1503,10 @@ class Console
         CreditPacks::ensureSchema();
 
         // Pack catalog from Swarmz — the plan builder (Dashboard → Settings →
-        // Plans → Credit packs) is the source of truth for what a pack is
-        // worth. Degrades gracefully: an unreachable catalog leaves existing
-        // mappings untouched on their cached amounts.
+        // Plans → Credit packs) is the source of truth. This page is the
+        // catalog's WHMCS mirror (v1.20.0): one row per pack, showing whether
+        // and how it is sold as a WHMCS Product Addon. Degrades gracefully: an
+        // unreachable catalog leaves existing mappings on their cached amounts.
         $catalog = [];
         $catalogError = '';
         if ($this->apiKey === '') {
@@ -1525,9 +1526,12 @@ class Console
             $pCredits = (int) ($p['credits'] ?? 0);
             if ($code !== '' && $pCredits > 0) {
                 $byCode[$code] = [
-                    'name'    => (string) (($p['name'] ?? '') !== '' ? $p['name'] : $code),
-                    'credits' => $pCredits,
-                    'cycle'   => (string) ($p['billing_cycle'] ?? 'onetime'),
+                    'name'        => (string) (($p['name'] ?? '') !== '' ? $p['name'] : $code),
+                    'credits'     => $pCredits,
+                    'cycle'       => (string) ($p['billing_cycle'] ?? 'onetime'),
+                    'description' => (string) ($p['description'] ?? ''),
+                    'price_cents' => (int) ($p['price_cents'] ?? 0),
+                    'currency'    => (string) ($p['currency'] ?? 'USD'),
                 ];
             }
         }
@@ -1536,9 +1540,52 @@ class Console
             CreditPacks::refreshFromCatalog($catalog);
         }
 
+        $isPost = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
+        $actionNotices = [];
+
+        if ($isPost && isset($_POST['swz_unlink'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $addonId = (int) $_POST['swz_unlink'];
+            if ($addonId > 0) {
+                CreditPacks::set($addonId, 0);
+                $actionNotices[] = ['success',
+                    'Unlinked. The WHMCS addon itself was not touched &mdash; hide or retire it in WHMCS if you no longer sell it.'];
+            }
+        }
+
+        if ($isPost && isset($_POST['swz_link_pack'], $_POST['swz_link_addon'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $code = (string) $_POST['swz_link_pack'];
+            $addonId = (int) $_POST['swz_link_addon'];
+            if ($addonId > 0 && isset($byCode[$code])) {
+                CreditPacks::set($addonId, $byCode[$code]['credits'], $code, $byCode[$code]['name']);
+                $actionNotices[] = ['success',
+                    'Linked &mdash; the addon now grants ' . number_format($byCode[$code]['credits'])
+                    . ' credits as &ldquo;' . $this->esc($byCode[$code]['name']) . '&rdquo;.'];
+            } elseif ($addonId > 0) {
+                $actionNotices[] = ['warning', 'That pack is not in your Swarmz catalog &mdash; nothing linked.'];
+            }
+        }
+
+        if ($isPost && isset($_POST['swz_create_addon'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $code = (string) $_POST['swz_create_addon'];
+            if (isset($byCode[$code])) {
+                $actionNotices[] = $this->createDraftAddonForPack($code, $byCode[$code]);
+            } else {
+                $actionNotices[] = ['warning', 'That pack is not in your Swarmz catalog &mdash; nothing created.'];
+            }
+        }
+
         $saved = null;
         $warnings = [];
-        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_packs_save'])) {
+        if ($isPost && isset($_POST['swz_packs_save'])) {
             // WHMCS admin CSRF token (belt and braces — validate when available).
             if (function_exists('check_token')) {
                 check_token('WHMCS.admin.default');
@@ -1581,66 +1628,67 @@ class Console
             $saved = $count;
         }
 
-        $intro = '<p class="swz-lede">Sell your Swarmz credit packs as normal WHMCS <strong>Product Addons</strong>. '
-            . 'Three steps: <strong>1)</strong> define your packs on Swarmz under Dashboard &rarr; Settings &rarr; Plans &rarr; '
-            . '<strong>Credit packs</strong> &mdash; that catalog decides what each pack is worth, and every sale is counted '
-            . 'per pack right there &mdash; <strong>2)</strong> create a matching addon under Setup &rarr; Products/Services &rarr; '
-            . 'Product Addons (give it its price, assign it to your product, leave &ldquo;Module&rdquo; empty and &ldquo;Hidden&rdquo; '
-            . 'unticked) &mdash; <strong>3)</strong> pick below which Swarmz pack the addon sells, and save. Done. '
-            . 'When a customer pays for a mapped addon, the credits land in their workspace within seconds. '
-            . 'Pack amounts stay in sync with your catalog automatically (re-checked daily and whenever you open this page), '
-            . 'paying the same invoice twice never grants twice, missed grants are healed every day, '
-            . 'and top-up credits stay valid for 12 months. Want a fixed number that is not in your catalog? '
-            . 'Pick <strong>Custom amount</strong> instead.</p>';
+        $intro = '<p class="swz-lede">Your Swarmz packs, and how each one is sold in WHMCS. '
+            . 'Define packs on Swarmz under Dashboard &rarr; Settings &rarr; Plans &rarr; <strong>Credit packs</strong> '
+            . '&mdash; the catalog decides what each pack is worth, and every sale is counted per pack right there. '
+            . 'For each pack below, <strong>Create addon</strong> makes a ready-linked WHMCS Product Addon as a '
+            . '<strong>hidden draft</strong>: check its price in WHMCS and untick &ldquo;Hidden&rdquo; when you are happy '
+            . '&mdash; nothing is sellable until you do. Already have an addon for it? Link it instead. '
+            . 'When a customer pays for a linked addon, the credits land in their workspace within seconds, '
+            . 'amounts stay in sync with your catalog automatically, and a double-paid invoice can never double-grant.</p>';
 
         $rows = CreditPacks::listAddons();
+        $linkedByCode = [];
+        $customRows = [];
+        $unmappedRows = [];
+        foreach ($rows as $r) {
+            if ($r['pack_code'] !== '') {
+                $linkedByCode[$r['pack_code']] = $r;
+            } elseif ($r['credits'] > 0) {
+                $customRows[] = $r;
+            } else {
+                $unmappedRows[] = $r;
+            }
+        }
+
+        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $showAll = !empty($_REQUEST['swz_all']);
+
+        $notice = '';
+        if ($catalogError !== '') {
+            $notice .= $this->notice('warning', $catalogError);
+        } elseif (empty($byCode) && !$showAll && empty($linkedByCode)) {
+            $notice .= $this->notice('info',
+                'No credit packs defined on Swarmz yet. Add them under <strong>Dashboard &rarr; Settings '
+                . '&rarr; Plans &rarr; Credit packs</strong> and they appear here, one click away from selling.'
+            );
+        }
+        foreach ($actionNotices as $an) {
+            $notice .= $this->notice($an[0], $an[1]);
+        }
+        foreach ($warnings as $w) {
+            $notice .= $this->notice('warning', $w);
+        }
+        if ($saved !== null) {
+            $notice .= $this->notice('success', 'Mappings saved.');
+        }
+
+        if (!$showAll) {
+            return $back . $title . $intro . $notice
+                . $this->renderPackCatalogView($byCode, $linkedByCode, $customRows, $unmappedRows, $token);
+        }
+
+        // ── Advanced view: every Product Addon, mapped by hand ─────────────
         if (empty($rows)) {
-            return $back . $title . $intro . $this->notice('info',
-                'No Product Addons exist yet. Create one under <strong>Setup &rarr; Products/Services '
-                . '&rarr; Product Addons</strong> (e.g. &ldquo;1,000 Extra Credits&rdquo;, one-time, '
-                . 'assigned to your Swarmz product), then map it here.'
+            return $back . $title . $intro . $notice . $this->notice('info',
+                'No Product Addons exist yet. Use <strong>Create addon</strong> on the packs view, or create one '
+                . 'under <strong>Setup &rarr; Products/Services &rarr; Product Addons</strong>.'
             );
         }
 
-        // This page is about CREDIT PACKS, not the host's whole addon catalog
-        // (v1.19.1 — Jordan: seeing every addon is "hella confusing"). Default
-        // to mapped rows only; "Show all addons" reveals the rest for mapping
-        // a new one. First run (nothing mapped yet) shows all, since there is
-        // nothing to filter to. Hidden rows post no form fields, so filtering
-        // can never unmap anything.
-        $showAll = !empty($_REQUEST['swz_all']);
-        $mappedRows = array_values(array_filter($rows, static function ($r) {
-            return $r['credits'] > 0;
-        }));
-        $filtered = !$showAll && !empty($mappedRows);
-        $display = $filtered ? $mappedRows : $rows;
-        $filterBar = '';
-        if ($filtered && count($mappedRows) < count($rows)) {
-            $filterBar = '<p class="swz-note" style="margin:0 0 10px;">Showing your '
-                . count($mappedRows) . ' mapped ' . (count($mappedRows) === 1 ? 'pack' : 'packs') . '. '
-                . '<a href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks', 'swz_all' => 1])) . '">'
-                . 'Show all ' . count($rows) . ' addons</a> to map another one.</p>';
-        } elseif ($showAll && !empty($mappedRows)) {
-            $filterBar = '<p class="swz-note" style="margin:0 0 10px;">Showing every Product Addon. '
-                . '<a href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">'
-                . 'Show only your mapped packs</a>.</p>';
-        }
-
         $body = '';
-        foreach ($display as $r) {
+        foreach ($rows as $r) {
             $assigned = array_filter(array_map('trim', explode(',', $r['packages'])));
-            // Two independent WHMCS flags, reported truthfully: `hidden` is
-            // what blocks an existing customer from buying it in the store;
-            // `showorder` only adds it to the initial-order form.
-            if ($r['retired']) {
-                $store = '<span class="swz-badge swz-badge-neutral">Retired</span>';
-            } elseif ($r['hidden']) {
-                $store = '<span class="swz-badge swz-badge-warn" title="The addon\'s Hidden checkbox is ticked — existing customers cannot buy it from the store">Hidden</span>';
-            } elseif ($r['showorder']) {
-                $store = '<span class="swz-badge swz-badge-ok">In store + order form</span>';
-            } else {
-                $store = '<span class="swz-badge swz-badge-ok" title="Buyable from the client-area addon store; not offered during initial checkout (Show on Order Form is unticked)">In store</span>';
-            }
             $cycle = $this->esc($r['billingcycle'] !== '' ? ucfirst($r['billingcycle']) : 'One time');
             if (strtolower($r['billingcycle']) === 'free') {
                 $cycle .= ' <span class="swz-badge swz-badge-info" title="A free addon never produces an invoice, so it grants ONCE when the addon is activated instead of on payment">grants on activation</span>';
@@ -1655,51 +1703,20 @@ class Console
             } else {
                 $mapped = '<span class="swz-muted">&mdash;</span>';
             }
-
-            $id = (int) $r['addon_id'];
-            $isCustom = $r['credits'] > 0 && $r['pack_code'] === '';
-            $opts = '<option value="">Not a credit pack</option>';
-            foreach ($byCode as $code => $p) {
-                $selAttr = ($r['pack_code'] === $code) ? ' selected' : '';
-                $label = $p['name'] . ' — ' . number_format($p['credits']) . ' credits'
-                    . ($p['cycle'] === 'monthly' ? ' (monthly)' : ' (one-time)');
-                $opts .= '<option value="code:' . $this->esc($code) . '"' . $selAttr . '>'
-                    . $this->esc($label) . '</option>';
-            }
-            if ($r['pack_code'] !== '' && !isset($byCode[$r['pack_code']])) {
-                // Mapped to a pack the catalog no longer lists (archived, or
-                // the catalog is unreachable): keep it selectable + truthful.
-                $label = ($r['pack_name'] !== '' ? $r['pack_name'] : $r['pack_code'])
-                    . ' — ' . number_format($r['credits']) . ' credits (not in your Swarmz catalog)';
-                $opts .= '<option value="code:' . $this->esc($r['pack_code']) . '" selected>'
-                    . $this->esc($label) . '</option>';
-            }
-            $opts .= '<option value="custom"' . ($isCustom ? ' selected' : '') . '>Custom amount&hellip;</option>';
-
             $body .= '<tr>'
                 . '<td><span class="swz-strong">' . $this->esc($r['name']) . '</span>'
-                . ' <span class="swz-muted">#' . $id . '</span></td>'
+                . ' <span class="swz-muted">#' . (int) $r['addon_id'] . '</span></td>'
                 . '<td>' . $cycle . '</td>'
-                . '<td>' . $store . '</td>'
+                . '<td>' . $this->storeBadge($r) . '</td>'
                 . '<td class="swz-num">' . count($assigned) . '</td>'
                 . '<td>' . $mapped . '</td>'
-                . '<td><select name="swz_pack_map[' . $id . ']" data-swz-addon="' . $id . '" '
-                . 'style="max-width:250px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">'
-                . $opts . '</select> '
-                . '<input type="number" min="0" step="1" name="swz_pack_credits[' . $id . ']" '
-                . 'value="' . ($isCustom ? (int) $r['credits'] : '') . '" placeholder="credits" '
-                . 'style="width:100px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;'
-                . 'text-align:right;' . ($isCustom ? '' : 'display:none;') . '" /></td>'
+                . '<td>' . $this->packMapCell($r, $byCode) . '</td>'
                 . '</tr>';
         }
 
-        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
-        $formParams = ['swarmz_action' => 'creditpacks'];
-        if ($showAll) {
-            $formParams['swz_all'] = 1; // saving from the all-view returns to it
-        }
-        $form = $filterBar
-            . '<form method="post" action="' . $this->esc($this->link($formParams)) . '">'
+        $form = '<p class="swz-note" style="margin:0 0 10px;">Advanced view: every Product Addon in your WHMCS. '
+            . '<a href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">Back to your packs</a>.</p>'
+            . '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'creditpacks', 'swz_all' => 1])) . '">'
             . $token
             . '<input type="hidden" name="swz_packs_save" value="1" />'
             . '<div class="swz-tablewrap"><table class="swz-table">'
@@ -1713,30 +1730,291 @@ class Console
             . 'to unmap an addon (a custom amount of 0 unmaps too). Credits already granted are never touched.</p>'
             . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
             . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Save mappings</button></p>'
-            . '</form>'
-            . '<script>document.querySelectorAll("select[data-swz-addon]").forEach(function(s){'
+            . '</form>' . $this->packMapToggleScript();
+
+        return $back . $title . $intro . $notice . $form;
+    }
+
+    /**
+     * Catalog-first packs view (v1.20.0): one row per Swarmz pack — plus any
+     * mapping whose pack has left the catalog, kept visible and truthful —
+     * with the linked WHMCS addon (and its store status) or the one-click
+     * actions to get there. Custom-amount mappings render in their own small
+     * table; the by-addon table stays reachable as the advanced view.
+     *
+     * @param array<string,array<string,mixed>> $byCode       catalog packs by code
+     * @param array<string,array<string,mixed>> $linkedByCode pack_code → mapped addon row
+     * @param array<int,array<string,mixed>>    $customRows   custom-amount mappings
+     * @param array<int,array<string,mixed>>    $unmappedRows addons with no mapping at all
+     */
+    private function renderPackCatalogView(array $byCode, array $linkedByCode, array $customRows, array $unmappedRows, string $token): string
+    {
+        $inputStyle = 'padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;';
+        $btnStyle = 'background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;';
+
+        $codes = array_keys($byCode);
+        foreach (array_keys($linkedByCode) as $code) {
+            if (!isset($byCode[$code])) {
+                $codes[] = $code;
+            }
+        }
+
+        $body = '';
+        foreach ($codes as $code) {
+            $inCatalog = isset($byCode[$code]);
+            $linked = $linkedByCode[$code] ?? null;
+            if ($inCatalog) {
+                $p = $byCode[$code];
+                $name = $p['name'];
+                $credits = (int) $p['credits'];
+                $price = $p['price_cents'] > 0
+                    ? number_format($p['price_cents'] / 100, 2) . ' ' . $this->esc($p['currency'])
+                        . ($p['cycle'] === 'monthly' ? ' /mo' : '')
+                    : 'Free';
+                $cycle = $p['cycle'] === 'monthly' ? 'Monthly' : 'One time';
+            } else {
+                $name = $linked['pack_name'] !== '' ? $linked['pack_name'] : $code;
+                $credits = (int) $linked['credits'];
+                $price = '&mdash;';
+                $cycle = '<span class="swz-badge swz-badge-warn" title="This mapping points at a pack that is no longer in your Swarmz catalog. It keeps granting its cached amount.">Not in catalog</span>';
+            }
+
+            if ($linked) {
+                $sold = '<span class="swz-strong">' . $this->esc($linked['name']) . '</span> '
+                    . '<span class="swz-muted">#' . (int) $linked['addon_id'] . '</span> '
+                    . $this->storeBadge($linked);
+                $action = '<form method="post" style="display:inline;">' . $token
+                    . '<input type="hidden" name="swz_unlink" value="' . (int) $linked['addon_id'] . '" />'
+                    . '<button type="submit" class="swz-btn">Unlink</button></form>';
+            } else {
+                $sold = '<span class="swz-muted">Not in WHMCS yet</span>';
+                // Adoption first: an unmapped addon already named like the
+                // pack gets linked, never duplicated.
+                $match = null;
+                foreach ($unmappedRows as $u) {
+                    if (strcasecmp($u['name'], $name) === 0) {
+                        $match = $u;
+                        break;
+                    }
+                }
+                if ($match) {
+                    $action = '<form method="post" style="display:inline;">' . $token
+                        . '<input type="hidden" name="swz_link_pack" value="' . $this->esc($code) . '" />'
+                        . '<input type="hidden" name="swz_link_addon" value="' . (int) $match['addon_id'] . '" />'
+                        . '<button type="submit" class="swz-btn" style="' . $btnStyle . '">Link existing addon #' . (int) $match['addon_id'] . '</button></form>';
+                } else {
+                    $action = '<form method="post" style="display:inline;">' . $token
+                        . '<input type="hidden" name="swz_create_addon" value="' . $this->esc($code) . '" />'
+                        . '<button type="submit" class="swz-btn" style="' . $btnStyle . '">Create addon</button></form>';
+                    if (!empty($unmappedRows)) {
+                        $opts = '<option value="">or link existing&hellip;</option>';
+                        foreach ($unmappedRows as $u) {
+                            $opts .= '<option value="' . (int) $u['addon_id'] . '">' . $this->esc($u['name']) . ' #' . (int) $u['addon_id'] . '</option>';
+                        }
+                        $action .= ' <form method="post" style="display:inline;">' . $token
+                            . '<input type="hidden" name="swz_link_pack" value="' . $this->esc($code) . '" />'
+                            . '<select name="swz_link_addon" style="' . $inputStyle . 'max-width:180px;">' . $opts . '</select> '
+                            . '<button type="submit" class="swz-btn">Link</button></form>';
+                    }
+                }
+            }
+
+            $body .= '<tr>'
+                . '<td><span class="swz-strong">' . $this->esc($name) . '</span> <span class="swz-muted">' . $this->esc($code) . '</span></td>'
+                . '<td class="swz-num">' . number_format($credits) . '</td>'
+                . '<td>' . $price . '</td>'
+                . '<td>' . $cycle . '</td>'
+                . '<td>' . $sold . '</td>'
+                . '<td>' . $action . '</td>'
+                . '</tr>';
+        }
+        if ($body === '') {
+            $body = '<tr><td colspan="6"><span class="swz-muted">No packs yet.</span></td></tr>';
+        }
+
+        $out = '<div class="swz-tablewrap"><table class="swz-table">'
+            . '<thead><tr><th>Swarmz pack</th><th class="swz-num">Credits</th><th>Your price</th>'
+            . '<th>Billing</th><th>Sold in WHMCS as</th><th>Action</th></tr></thead>'
+            . '<tbody>' . $body . '</tbody></table></div>'
+            . '<p class="swz-note">A created addon starts <strong>hidden</strong>, assigned to your Swarmz products '
+            . 'and kept off the initial order form: open <a href="configaddons.php">Setup &rarr; Products/Services '
+            . '&rarr; Product Addons</a>, check the price, and untick <strong>Hidden</strong> to start selling. '
+            . 'Sales counts appear per pack in your Swarmz dashboard.</p>';
+
+        if (!empty($customRows)) {
+            $rowsHtml = '';
+            foreach ($customRows as $r) {
+                $rowsHtml .= '<tr>'
+                    . '<td><span class="swz-strong">' . $this->esc($r['name']) . '</span> '
+                    . '<span class="swz-muted">#' . (int) $r['addon_id'] . '</span> ' . $this->storeBadge($r) . '</td>'
+                    . '<td class="swz-num">' . number_format($r['credits']) . ' credits</td>'
+                    . '<td>' . $this->packMapCell($r, $byCode) . '</td>'
+                    . '</tr>';
+            }
+            $out .= '<h4 style="margin:22px 0 4px;font-size:14px;">Custom amounts</h4>'
+                . '<p class="swz-note" style="margin:0 0 8px;">Addons granting a hand-typed amount instead of a catalog pack.</p>'
+                . '<form method="post">' . $token
+                . '<input type="hidden" name="swz_packs_save" value="1" />'
+                . '<div class="swz-tablewrap"><table class="swz-table">'
+                . '<thead><tr><th>Product addon</th><th class="swz-num">Currently grants</th><th>Sells as</th></tr></thead>'
+                . '<tbody>' . $rowsHtml . '</tbody></table></div>'
+                . '<p style="margin:12px 0 0;"><button type="submit" class="swz-btn" style="' . $btnStyle . '">Save</button></p>'
+                . '</form>' . $this->packMapToggleScript();
+        }
+
+        $out .= '<p class="swz-note" style="margin-top:18px;">Need something unusual &mdash; a custom amount, or mapping '
+            . 'any addon by hand? <a href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks', 'swz_all' => 1]))
+            . '">Open the advanced by-addon view</a>.</p>';
+        return $out;
+    }
+
+    /** Store-visibility badge for a Product Addon row (hidden/retired/showorder). */
+    private function storeBadge(array $r): string
+    {
+        if (!empty($r['retired'])) {
+            return '<span class="swz-badge swz-badge-neutral">Retired</span>';
+        }
+        if (!empty($r['hidden'])) {
+            return '<span class="swz-badge swz-badge-warn" title="The addon\'s Hidden checkbox is ticked — existing customers cannot buy it from the store">Hidden</span>';
+        }
+        if (!empty($r['showorder'])) {
+            return '<span class="swz-badge swz-badge-ok">In store + order form</span>';
+        }
+        return '<span class="swz-badge swz-badge-ok" title="Buyable from the client-area addon store; not offered during initial checkout (Show on Order Form is unticked)">In store</span>';
+    }
+
+    /** The "Sells as" select + custom-amount input for one addon row. */
+    private function packMapCell(array $r, array $byCode): string
+    {
+        $id = (int) $r['addon_id'];
+        $isCustom = $r['credits'] > 0 && $r['pack_code'] === '';
+        $opts = '<option value="">Not a credit pack</option>';
+        foreach ($byCode as $code => $p) {
+            $selAttr = ($r['pack_code'] === $code) ? ' selected' : '';
+            $label = $p['name'] . ' — ' . number_format($p['credits']) . ' credits'
+                . ($p['cycle'] === 'monthly' ? ' (monthly)' : ' (one-time)');
+            $opts .= '<option value="code:' . $this->esc($code) . '"' . $selAttr . '>'
+                . $this->esc($label) . '</option>';
+        }
+        if ($r['pack_code'] !== '' && !isset($byCode[$r['pack_code']])) {
+            // Mapped to a pack the catalog no longer lists (archived, or the
+            // catalog is unreachable): keep it selectable + truthful.
+            $label = ($r['pack_name'] !== '' ? $r['pack_name'] : $r['pack_code'])
+                . ' — ' . number_format($r['credits']) . ' credits (not in your Swarmz catalog)';
+            $opts .= '<option value="code:' . $this->esc($r['pack_code']) . '" selected>'
+                . $this->esc($label) . '</option>';
+        }
+        $opts .= '<option value="custom"' . ($isCustom ? ' selected' : '') . '>Custom amount&hellip;</option>';
+        return '<select name="swz_pack_map[' . $id . ']" data-swz-addon="' . $id . '" '
+            . 'style="max-width:250px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">'
+            . $opts . '</select> '
+            . '<input type="number" min="0" step="1" name="swz_pack_credits[' . $id . ']" '
+            . 'value="' . ($isCustom ? (int) $r['credits'] : '') . '" placeholder="credits" '
+            . 'style="width:100px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;'
+            . 'text-align:right;' . ($isCustom ? '' : 'display:none;') . '" />';
+    }
+
+    /** Toggles the custom-credits input next to each mapping select. */
+    private function packMapToggleScript(): string
+    {
+        return '<script>document.querySelectorAll("select[data-swz-addon]").forEach(function(s){'
             . 'var input=s.parentNode.querySelector("input[type=number]");'
             . 'var sync=function(){if(input){input.style.display=s.value==="custom"?"":"none";}};'
             . 's.addEventListener("change",sync);sync();});</script>';
+    }
 
-        $notice = '';
-        if ($catalogError !== '') {
-            $notice .= $this->notice('warning', $catalogError);
-        } elseif (empty($byCode)) {
-            $notice .= $this->notice('info',
-                'No credit packs defined on Swarmz yet. Add them under <strong>Dashboard &rarr; Settings '
-                . '&rarr; Plans &rarr; Credit packs</strong> and they appear here to map &mdash; '
-                . 'or use <strong>Custom amount</strong> below.'
-            );
-        }
-        foreach ($warnings as $w) {
-            $notice .= $this->notice('warning', $w);
-        }
-        if ($saved !== null) {
-            $notice .= $this->notice('success', 'Mappings saved.');
-        }
+    /**
+     * One-click "Create addon" (v1.20.0): makes the WHMCS Product Addon for a
+     * catalog pack as a HIDDEN DRAFT — correct billing cycle, assigned to
+     * every Swarmz product, price prefilled from the catalog — and links it.
+     * Hidden means nothing is sellable until the host reviews the price in
+     * WHMCS and unticks the checkbox, so an imperfect prefill can never sell
+     * credits at the wrong price. An addon already carrying the pack's name
+     * is adopted (linked) instead — never duplicated.
+     *
+     * @param array<string,mixed> $pack catalog entry (name/credits/cycle/description/price_cents/currency)
+     * @return array{0:string,1:string} [notice type, message html]
+     */
+    private function createDraftAddonForPack(string $code, array $pack): array
+    {
+        try {
+            $existing = Capsule::table('tbladdons')->where('name', $pack['name'])->first(['id']);
+            if ($existing) {
+                CreditPacks::set((int) $existing->id, (int) $pack['credits'], $code, $pack['name']);
+                return ['success', 'An addon named &ldquo;' . $this->esc($pack['name'])
+                    . '&rdquo; already existed &mdash; linked it instead of creating a duplicate.'];
+            }
 
-        return $back . $title . $intro . $notice . $form;
+            $pids = [];
+            foreach (Capsule::table('tblproducts')->where('servertype', 'swarmz')->get(['id']) as $p) {
+                $pids[] = (int) $p->id;
+            }
+            $cycle = 'onetime';
+            if ((int) $pack['price_cents'] <= 0) {
+                $cycle = 'free';
+            } elseif ($pack['cycle'] === 'monthly') {
+                $cycle = 'recurring';
+            }
+            $data = [
+                'name'         => $pack['name'],
+                'description'  => (string) $pack['description'],
+                'billingcycle' => $cycle,
+                'packages'     => implode(',', $pids),
+                'showorder'    => 0, // top-ups are bought later, not at initial checkout
+                'hidden'       => 1, // DRAFT — the host reviews, then unticks
+            ];
+            try {
+                $addonId = (int) Capsule::table('tbladdons')->insertGetId($data);
+            } catch (\Throwable $e) {
+                // Progressive fallback for schema variance across WHMCS 8.x.
+                unset($data['description']);
+                $addonId = (int) Capsule::table('tbladdons')->insertGetId($data);
+            }
+            if ($addonId <= 0) {
+                return ['danger', 'WHMCS did not return an id for the new addon &mdash; nothing linked.'];
+            }
+
+            // Price rows per currency: the pack price lands in the default
+            // currency, converted by each currency's rate. The draft stays
+            // hidden, so a conversion the host disagrees with gets fixed in
+            // WHMCS before anything can sell.
+            $price = max(0, (int) $pack['price_cents']) / 100;
+            try {
+                foreach (Capsule::table('tblcurrencies')->get() as $cur) {
+                    $rate = (float) ($cur->rate ?? 1);
+                    if ($rate <= 0) {
+                        $rate = 1.0;
+                    }
+                    $row = [
+                        'type'     => 'addon',
+                        'currency' => (int) $cur->id,
+                        'relid'    => $addonId,
+                        'monthly'  => number_format($price * $rate, 2, '.', ''),
+                    ];
+                    try {
+                        Capsule::table('tblpricing')->insert($row + [
+                            'msetupfee' => '0.00', 'qsetupfee' => '0.00', 'ssetupfee' => '0.00',
+                            'asetupfee' => '0.00', 'bsetupfee' => '0.00', 'tsetupfee' => '0.00',
+                            'quarterly' => '-1.00', 'semiannually' => '-1.00', 'annually' => '-1.00',
+                            'biennially' => '-1.00', 'triennially' => '-1.00',
+                        ]);
+                    } catch (\Throwable $e) {
+                        Capsule::table('tblpricing')->insert($row);
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Pricing is host-reviewed anyway; the draft note covers it.
+            }
+
+            CreditPacks::set($addonId, (int) $pack['credits'], $code, $pack['name']);
+            return ['success', 'Draft addon <strong>#' . $addonId . ' ' . $this->esc($pack['name'])
+                . '</strong> created and linked &mdash; hidden until you finish it. '
+                . '<a href="configaddons.php">Open Product Addons</a>, check the price'
+                . (empty($pids) ? ', assign it to your Swarmz product' : '')
+                . ', and untick <strong>Hidden</strong> to start selling.'];
+        } catch (\Throwable $e) {
+            return ['danger', 'Could not create the addon: ' . $this->esc($e->getMessage())];
+        }
     }
 
     /**
