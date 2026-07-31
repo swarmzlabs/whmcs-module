@@ -97,22 +97,30 @@ to offer several plans inline; point different entries at different WHMCS
 products. A `$0.00` product with instant activation gives the "type a prompt →
 free instance spins up building it" flow end-to-end.
 
-**Credit packs (1.11.0)** — sell extra Swarmz credits as ordinary WHMCS
-**Product Addons**, so a customer who runs out mid-build can buy more instead
-of dead-ending (even on your highest plan):
+**Credit packs (catalog-first since 1.20.0)** — sell extra Swarmz credits as
+ordinary WHMCS **Product Addons**, so a customer who runs out mid-build can buy
+more instead of dead-ending (even on your highest plan). The packs you define
+in your Swarmz dashboard (Settings → Plans → Credit packs) are the source of
+truth; the Reseller Console → **Credit Packs** page mirrors that catalog:
 
-1. Create a Product Addon (Setup → Products/Services → Product Addons), e.g.
-   *"1,000 Extra Credits"* — one-time or recurring, any price, **no module** on
-   the addon — and assign it to your Swarmz product(s) with *Show on Order* on.
-2. Map it in the Reseller Console → **Credit Packs** page: set the credits it
-   grants per purchase.
-3. Done. When a customer **pays** an invoice containing the addon, the module
-   posts `/platform-topup` and the credits land on their workspace — once per
-   invoice (recurring addons re-grant on every paid renewal), idempotent
-   against re-fired hooks, self-healing via a daily sweep, and metered to you
-   wholesale at assignment. Top-up credits expire after 12 months. The client
-   area shows a quiet "Buy more" link whenever the product has an orderable
-   mapped pack.
+1. Define the pack on Swarmz — name, credits, one-time or monthly. Its **Sold**
+   count accumulates right there as customers buy.
+2. On the console's Credit Packs page, click **Create addon**: the Product
+   Addon is created as a **hidden draft** — billing cycle from the pack,
+   assigned to your Swarmz products, price prefilled, already linked. (An
+   addon already named like the pack is adopted, never duplicated; a hand-typed
+   **Custom amount** mapping is still available.)
+3. In WHMCS, check the draft's price and untick **Hidden** — nothing can sell
+   before you do. When a customer **pays** an invoice containing the addon, the
+   module posts `/platform-topup` and the credits land on their workspace —
+   once per invoice (recurring addons re-grant on every paid renewal),
+   idempotent against re-fired hooks, self-healing via a daily sweep, metered
+   to you wholesale at assignment, and attributed to the pack for per-pack
+   sales counts. Pack amounts re-sync from the catalog automatically (daily and
+   on console view). Top-up credits expire after 12 months. The client area
+   shows a "Buy more" button whenever the product has an orderable mapped pack,
+   with the checkout flow (direct invoice / standard cart / Lagom) selectable
+   on the console's Appearance page.
 
 **Plan upgrades** — self-serve upgrades need no extra module wiring: enable
 WHMCS's native **Upgrade/Downgrade** on your products (product → Upgrades tab,
@@ -148,10 +156,28 @@ string shown to a client or admin.
 
 ## Requirements
 
-- WHMCS **8.x or newer**
-- PHP **8.1+** with the `curl`, `json`, and `mbstring` extensions
-- An active Swarmz platform account with client-workspace provisioning enabled
-- A Swarmz API key (`sk_live_…`) issued from the Swarmz admin area
+| Requirement | Minimum | Used for |
+|-------------|---------|----------|
+| WHMCS | **8.x** or newer | Module APIs, hooks, client-area templates |
+| PHP | **8.1** or newer | The module is modern, plain PHP — no encoders |
+| `curl` extension | enabled | Every Swarmz API call, and downloading updates |
+| `json` extension | enabled (bundled with PHP 8) | API request/response bodies |
+| `mbstring` extension | enabled | Safe text handling (prompts, release notes, translations) |
+| `zip` extension (ZipArchive) | enabled — **auto-updater only** | Extracting the release ZIP in Console → Updates; without it, update by ZIP upload instead |
+| Outbound HTTPS (443) | to `api.swarmz.net` | All platform calls |
+| Outbound HTTPS for updates | to `api.github.com`, `github.com`, `*.githubusercontent.com` | The auto-updater's release check + download |
+| File ownership | module folders owned by the PHP user, dirs `755`, files `644` | The one-click auto-updater (never `777`) |
+| Swarmz account | **active**, with an `sk_live_…` key | A `draft` account returns `409 account_inactive` |
+
+**Explicitly NOT needed:** ionCube Loader (open-source, plain PHP — nothing
+encoded), a cron of its own (rides standard WHMCS automation), Composer/Node/
+shell access, `allow_url_fopen` (all HTTP via curl), or database changes (two
+small self-created `mod_swarmz_*` tables; your schema is never altered and
+updates never touch your data). Update integrity uses PHP's built-in SHA-256.
+
+The **Console → Updates** page runs a preflight that verifies the `zip`
+extension, GitHub reachability, and folder writability — and says exactly what
+to fix when something fails.
 
 ---
 
@@ -168,16 +194,24 @@ unzip it at your WHMCS root. It lays down two modules:
 
 ### Updating an existing install
 
-Overwrite the two module folders with the new version's — the module is
-stateless (its only persistence is the two per-service custom fields), so there
-is no data migration and no downtime:
+**Preferred: one click in the admin.** The Reseller Console's **Updates** page
+checks this repo's latest release, verifies the download against its published
+SHA-256, backs up the live module folders, warns about any files you
+hand-edited, and installs on an explicit click. Settings, mappings, and
+customer data are never touched. It needs the `zip` extension and the module
+folders owned by the PHP user (dirs `755`, files `644`, never `777`) — the
+page's preflight tells you exactly what to fix if anything is off.
+
+**Manual route** (works always, needs no special permissions): overwrite the
+two module folders with the new release's — the module keeps no state in its
+files, so there is no data migration and no downtime:
 
 ```
 modules/servers/swarmz/      ← replace
 modules/addons/swarmz/        ← replace
 ```
 
-After the overwrite, each product's **Module Settings** tab shows the single
+After updating, each product's **Module Settings** tab shows the single
 **Plan** dropdown. No WHMCS reactivation is needed.
 
 > **Upgrading to 1.5.0** is a breaking change: the legacy positional entitlement
