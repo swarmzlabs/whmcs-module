@@ -244,6 +244,7 @@
 .swz-t-editorial .swz-modal-title { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; font-size: 22px; }
 .swz-t-editorial .swz-pack-name { font-family: Georgia, 'Times New Roman', serif; font-weight: 600; }
 .swz-t-editorial .swz-pack-credits { font-family: Georgia, 'Times New Roman', serif; font-weight: 500; }
+.swz-t-editorial .swz-pack-chip { background: none; border-radius: 0; padding: 0; color: inherit; opacity: .55; font-weight: 500; }
 .swz-t-editorial .swz-pack-order { border-radius: 0; background: transparent; color: var(--swz-accent) !important; border-bottom: 2px solid var(--swz-accent); padding: 4px 2px; }
 .swz-t-editorial .swz-modal-close { border-radius: 0; background: transparent; border: 1px solid currentColor; }
 </style>

@@ -8,19 +8,19 @@
   "modules/addons/swarmz/lib/Updater.php": "24732217e6a6047be5949f97fb872673810041eb24186e161cbfe9a2d41f3678",
   "modules/addons/swarmz/logo.png": "16630012ccd405b6ff85cf2e81b690d3819adde0ec2c5ccecd69d2bed4f6dfe6",
   "modules/addons/swarmz/promptbox.php": "b80b69f7efb1cc2c11294008a415443cf98f7cebbe674ab8fe72581f322c012a",
-  "modules/addons/swarmz/swarmz.php": "a9eda74b184d07a2963e45a6b7cd637c5f8a3b671d2fdcba1c4a7ed2ac2a6f08",
+  "modules/addons/swarmz/swarmz.php": "d2a589e6dd3c6fd7f5ae1a71f1705943d7c9029c554e73962a18461a68a73558",
   "modules/servers/swarmz/hooks.php": "7d495fb05ff5a7ffcad1ab1a1d2d772230b8da0f19efd786f3c35db758e7db41",
   "modules/servers/swarmz/language/english.php": "0ef317028e0ebd401efdb7398cbe1f43a213d95698034df9d5f62c02e8d0d6cf",
   "modules/servers/swarmz/language/french.php": "52ae03c3700a8cdcc34a481fd7327363e57798c7091ad40271831c77634c5e99",
   "modules/servers/swarmz/language/german.php": "1ccad641e695cb143f832dd2d6feaaabc1dc2eeb5700cc436aa7d9933d24b737",
   "modules/servers/swarmz/language/italian.php": "f7965b9df5aae3d52d7d456695f338288fbadfcf3a42d5ebe3e6793c58e70962",
   "modules/servers/swarmz/language/spanish.php": "727214c22b5f78d9015dad2c1c86c74b4afceafb171c51adeb87ff124cbddc42",
-  "modules/servers/swarmz/lib/Api.php": "2f5bfc0e2da3d6822575736ea82a30c0c7aecbb088fb1eb156acabbb4601eef2",
+  "modules/servers/swarmz/lib/Api.php": "f742794142d67462829c94053e6cc037f97d3e03dab46396e9430d71d1e2da54",
   "modules/servers/swarmz/lib/Exceptions.php": "01f346ab6ee71352a7fa3273bfa59a2b0a69687d2f398343ea4b2ecb58046d3a",
   "modules/servers/swarmz/lib/Helpers.php": "dc68aafe4977f9d8d9500ed19b5d36a63187223a71d9d703c577ab482f81f525",
   "modules/servers/swarmz/logo.png": "16630012ccd405b6ff85cf2e81b690d3819adde0ec2c5ccecd69d2bed4f6dfe6",
   "modules/servers/swarmz/swarmz.php": "c9e55c48a0ea87cfa65c9b1712c1c221ef6f8481d20b35227828bac1d308a231",
-  "modules/servers/swarmz/templates/overview.tpl": "e4259bf8fc61d1ece922d29302515d545c7abfd19356e868554c4242c59dcbd0"
+  "modules/servers/swarmz/templates/overview.tpl": "e22ff6ced815f4ec7b4b61b580986ff42408b18728f55fc53a3fffab7dcb2297"
  },
- "version": "1.18.0"
+ "version": "1.18.1"
 }
