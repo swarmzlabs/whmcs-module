@@ -1265,6 +1265,7 @@ class Console
                     . (int) $result['files'] . ' files installed; the previous version was backed up to '
                     . '<code>' . $this->esc(str_replace($this->whmcsRootForDisplay(), '', (string) $result['backup'])) . '</code>. '
                     . 'Open <strong>System Settings &rarr; Addon Modules</strong> once so WHMCS runs the version upgrade, then reload this console.'
+                    . (!empty($result['note']) ? '<br><span class="swz-muted">' . $this->esc((string) $result['note']) . '</span>' : '')
                 );
             }
             $out .= $this->notice('danger', '<strong>Update not applied:</strong> ' . $this->esc((string) ($result['error'] ?? 'unknown error')));

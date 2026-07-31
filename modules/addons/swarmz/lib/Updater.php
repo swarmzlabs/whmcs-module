@@ -318,28 +318,87 @@ class Updater
         $zip->close();
         @unlink($tmpZip);
 
+        // WHOLE-DIRECTORY SWAP (v1.17.2). The old file-by-file overlay needed
+        // write access inside every SUBDIRECTORY of the live module — one
+        // root-owned lib/ or language/ folder and the update half-failed
+        // after a green preflight. Instead we now assemble the complete new
+        // module tree in a sibling staging dir (created by PHP, so PHP owns
+        // every file), then swap it into place with two renames. Renames only
+        // need write access on modules/servers/ and modules/addons/ — exactly
+        // what the preflight verifies — so internal ownership of the OLD tree
+        // is irrelevant. Hand-added files in the live tree are carried over
+        // (additive contract); the old tree is parked next to the backup.
         $copied = 0;
         $failed = [];
+        $parked = [];
+        $swapped = [];
         foreach (self::ALLOWED_PREFIXES as $prefix) {
             $src = $stage . '/' . rtrim($prefix, '/');
             if (!is_dir($src)) {
                 continue;
             }
-            self::overlayTree($src, $root . '/' . rtrim($prefix, '/'), $copied, $failed);
+            $live = $root . '/' . rtrim($prefix, '/');
+            $parent = dirname($live);
+            $incoming = $parent . '/.swz-incoming-' . bin2hex(random_bytes(4));
+
+            // 5a. Release tree first — must be complete.
+            if (!self::copyTree($src, $incoming)) {
+                self::removeTree($incoming);
+                $failed[] = $prefix . ' (could not assemble the new tree in ' . $parent . ')';
+                continue;
+            }
+            // 5b. Carry over live files the release does not ship (best-effort:
+            //     an unreadable extra is skipped and reported, never fatal).
+            self::carryExtras($live, $incoming, $parked);
+
+            // 5c. Swap. Park the old tree beside the backup; roll back the
+            //     park if the second rename fails so the module never vanishes.
+            $old = $parent . '/.swz-old-' . preg_replace('/[^0-9a-zA-Z.]/', '', $from) . '-' . date('His');
+            if (!@rename($live, $old)) {
+                self::removeTree($incoming);
+                $failed[] = $prefix . ' (could not move the current module aside — is ' . $parent . ' writable?)';
+                continue;
+            }
+            if (!@rename($incoming, $live)) {
+                @rename($old, $live); // restore; nothing changed
+                self::removeTree($incoming);
+                $failed[] = $prefix . ' (could not move the new module into place)';
+                continue;
+            }
+            $copied += self::countFiles($live);
+            $swapped[] = $old;
         }
         self::removeTree($stage);
 
+        // Old trees: try to remove; if the old files aren't deletable by PHP
+        // (the very ownership mess the swap works around), say where they are.
+        $leftovers = [];
+        foreach ($swapped as $old) {
+            self::removeTree($old);
+            if (is_dir($old)) {
+                $leftovers[] = $old;
+            }
+        }
+
         if (!empty($failed)) {
-            self::log('Updater.PartialFailure', [], ['failed' => array_slice($failed, 0, 20), 'backup' => $backupDir]);
+            self::log('Updater.PartialFailure', [], ['failed' => $failed, 'backup' => $backupDir]);
             return [
                 'ok' => false,
-                'error' => count($failed) . ' file(s) could not be written (first: ' . $failed[0] . '). '
-                    . 'Restore by copying back the backup at ' . $backupDir . ', or re-upload the release ZIP.',
+                'error' => 'Update not applied for: ' . implode('; ', $failed)
+                    . '. Nothing was half-written — each module directory is swapped whole. Backup at ' . $backupDir . '.',
             ];
+        }
+        $note = '';
+        if (!empty($leftovers)) {
+            $note = ' The previous version is parked at ' . implode(' and ', $leftovers)
+                . ' (PHP may not own those old files) — delete it whenever you like.';
+        }
+        if (!empty($parked)) {
+            $note .= ' Skipped carrying ' . count($parked) . ' unreadable extra file(s): ' . implode(', ', array_slice($parked, 0, 5)) . '.';
         }
 
         self::writeCache(['ok' => true] + $info + ['checked_at' => 0]); // bust TTL so the banner clears next load
-        self::log('Updater.Updated', ['from' => $from, 'to' => $info['version']], ['files' => $copied, 'backup' => $backupDir]);
+        self::log('Updater.Updated', ['from' => $from, 'to' => $info['version']], ['files' => $copied, 'backup' => $backupDir, 'note' => $note]);
 
         return [
             'ok' => true,
@@ -347,6 +406,7 @@ class Updater
             'to' => (string) $info['version'],
             'files' => $copied,
             'backup' => $backupDir,
+            'note' => $note,
         ];
     }
 
@@ -544,6 +604,63 @@ class Updater
                 $failed[] = str_replace(self::whmcsRoot() . '/', '', $d);
             }
         }
+    }
+
+    /**
+     * Carry files present in the live tree but not in the assembled new tree
+     * (hand-added files — the additive contract). Best-effort per file: an
+     * unreadable extra is recorded in $skipped, never fatal.
+     */
+    private static function carryExtras(string $live, string $incoming, array &$skipped): void
+    {
+        if (!is_dir($live)) {
+            return;
+        }
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($live, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($it as $item) {
+            $rel = substr($item->getPathname(), strlen($live) + 1);
+            $dst = $incoming . '/' . $rel;
+            if ($item->isLink()) {
+                continue;
+            }
+            if ($item->isDir()) {
+                if (!is_dir($dst)) {
+                    @mkdir($dst, 0755, true);
+                }
+                continue;
+            }
+            if (file_exists($dst)) {
+                continue; // release version wins
+            }
+            $dir = dirname($dst);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0755, true);
+            }
+            if (!@copy($item->getPathname(), $dst)) {
+                $skipped[] = $rel;
+            }
+        }
+    }
+
+    /** Count regular files in a tree (for the result summary). */
+    private static function countFiles(string $dir): int
+    {
+        if (!is_dir($dir)) {
+            return 0;
+        }
+        $n = 0;
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $item) {
+            if ($item->isFile()) {
+                $n++;
+            }
+        }
+        return $n;
     }
 
     /** Remove a temp tree (staging only — never called on live dirs). */
