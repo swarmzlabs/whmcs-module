@@ -5,6 +5,25 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.20.0] - 2026-07-31
+
+### Changed
+- **The Credit Packs page is now your Swarmz catalog.** One row per pack
+  you defined in the plan builder — credits, price, billing, and exactly
+  how (or whether) it is sold in WHMCS, with the linked addon's store
+  status right there. Custom-amount mappings get their own small table,
+  and the full by-addon table remains as the advanced view.
+
+### Added
+- **One-click "Create addon"**: for a pack not yet in WHMCS, the console
+  creates the Product Addon as a **hidden draft** — correct billing
+  cycle, assigned to your Swarmz products, price prefilled from the
+  catalog, already linked. Review the price in WHMCS and untick
+  "Hidden" to start selling; nothing is sellable before that. An addon
+  already carrying the pack's name is adopted (linked), never
+  duplicated. **Link existing** / **Unlink** actions per pack round it
+  out.
+
 ## [1.19.1] - 2026-07-31
 
 ### Changed
