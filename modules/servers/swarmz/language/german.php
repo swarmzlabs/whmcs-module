@@ -65,4 +65,5 @@ return [
     'contact_support' => 'Support kontaktieren',
     'no_pools' => 'In diesem Tarif ist kein Guthaben enthalten.',
     'updates_fast' => 'Guthaben werden Sekunden nach dem Kauf aktualisiert.',
+    'pack_added' => 'Aufladung hinzugefügt — das Guthaben wird Ihrem Workspace jetzt gutgeschrieben.',
 ];

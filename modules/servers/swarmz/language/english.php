@@ -87,4 +87,5 @@ return [
     'contact_support' => 'Contact support',
     'no_pools' => 'No credit allowances are included on this plan.',
     'updates_fast' => 'Balances update within seconds of a purchase.',
+    'pack_added' => 'Top-up added — the credits are being applied to your workspace now.',
 ];

@@ -270,6 +270,10 @@
         {/if}
     </div>
 
+    {if $packNotice}
+        <div class="alert alert-success" style="margin-top:16px;">{$L.pack_added}</div>
+    {/if}
+
     {if !$tenantId}
         <div class="alert alert-info" style="margin-top:16px;">{$L.provisioning_notice}</div>
     {else}

@@ -334,6 +334,25 @@ class Helpers
         'pink'   => '#ec4899',
     ];
 
+    /** Valid checkout flows for pack orders (v1.18.0). First is default. */
+    const CHECKOUT_FLOWS = ['invoice', 'standard', 'lagom'];
+
+    /**
+     * How pack orders check out (console Appearance page):
+     *   invoice  — the module places the order and sends the customer to the
+     *              invoice (works on every theme; free packs complete
+     *              instantly). The default.
+     *   standard — classic WHMCS cart deep link (stock order forms).
+     *   lagom    — Lagom Smart Order Form's addons page (its own checkout;
+     *              Lagom has no per-addon deep link, so the customer picks
+     *              the pack there).
+     */
+    public static function checkoutFlow(): string
+    {
+        $v = strtolower(trim((string) self::addonSetting('Checkout Flow', 'invoice')));
+        return in_array($v, self::CHECKOUT_FLOWS, true) ? $v : 'invoice';
+    }
+
     /** The host-selected client-area theme; unknown values fall back to classic. */
     public static function clientTheme(): string
     {
