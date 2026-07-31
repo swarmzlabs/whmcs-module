@@ -1602,8 +1602,32 @@ class Console
             );
         }
 
+        // This page is about CREDIT PACKS, not the host's whole addon catalog
+        // (v1.19.1 — Jordan: seeing every addon is "hella confusing"). Default
+        // to mapped rows only; "Show all addons" reveals the rest for mapping
+        // a new one. First run (nothing mapped yet) shows all, since there is
+        // nothing to filter to. Hidden rows post no form fields, so filtering
+        // can never unmap anything.
+        $showAll = !empty($_REQUEST['swz_all']);
+        $mappedRows = array_values(array_filter($rows, static function ($r) {
+            return $r['credits'] > 0;
+        }));
+        $filtered = !$showAll && !empty($mappedRows);
+        $display = $filtered ? $mappedRows : $rows;
+        $filterBar = '';
+        if ($filtered && count($mappedRows) < count($rows)) {
+            $filterBar = '<p class="swz-note" style="margin:0 0 10px;">Showing your '
+                . count($mappedRows) . ' mapped ' . (count($mappedRows) === 1 ? 'pack' : 'packs') . '. '
+                . '<a href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks', 'swz_all' => 1])) . '">'
+                . 'Show all ' . count($rows) . ' addons</a> to map another one.</p>';
+        } elseif ($showAll && !empty($mappedRows)) {
+            $filterBar = '<p class="swz-note" style="margin:0 0 10px;">Showing every Product Addon. '
+                . '<a href="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">'
+                . 'Show only your mapped packs</a>.</p>';
+        }
+
         $body = '';
-        foreach ($rows as $r) {
+        foreach ($display as $r) {
             $assigned = array_filter(array_map('trim', explode(',', $r['packages'])));
             // Two independent WHMCS flags, reported truthfully: `hidden` is
             // what blocks an existing customer from buying it in the store;
@@ -1670,7 +1694,12 @@ class Console
         }
 
         $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
-        $form = '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'creditpacks'])) . '">'
+        $formParams = ['swarmz_action' => 'creditpacks'];
+        if ($showAll) {
+            $formParams['swz_all'] = 1; // saving from the all-view returns to it
+        }
+        $form = $filterBar
+            . '<form method="post" action="' . $this->esc($this->link($formParams)) . '">'
             . $token
             . '<input type="hidden" name="swz_packs_save" value="1" />'
             . '<div class="swz-tablewrap"><table class="swz-table">'
