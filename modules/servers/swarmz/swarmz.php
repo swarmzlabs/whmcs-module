@@ -527,7 +527,31 @@ function swarmz_buypack(array $params)
         $_SESSION['cart']['addons'][] = ['id' => $packId, 'serviceid' => $serviceId];
     }
 
-    _swarmz_redirect('cart.php?a=view');
+    // _swarmz_redirect() only accepts absolute URLs (it guards the SSO path
+    // against open-redirect junk), so a bare 'cart.php?a=view' fell through
+    // silently and WHMCS rendered its "Action Completed Successfully!" page
+    // instead of the cart (v1.17.3 bug). Resolve the installation's SystemURL
+    // and send a 303 — the correct POST-to-GET redirect, which also stops the
+    // browser's "confirm form resubmission" prompt on reload.
+    $base = '';
+    try {
+        if (class_exists('\\WHMCS\\Config\\Setting')) {
+            $base = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
+        }
+    } catch (\Throwable $e) {
+        // fall through to the CONFIG global
+    }
+    if ($base === '' && isset($GLOBALS['CONFIG']['SystemURL'])) {
+        $base = rtrim((string) $GLOBALS['CONFIG']['SystemURL'], '/');
+    }
+    if (!headers_sent()) {
+        if (preg_match('#^https?://#i', $base)) {
+            header('Location: ' . $base . '/cart.php?a=view', true, 303);
+        } else {
+            header('Location: cart.php?a=view', true, 303);
+        }
+        exit;
+    }
     return '';
 }
 
