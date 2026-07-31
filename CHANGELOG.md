@@ -5,6 +5,23 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.2] - 2026-07-31
+
+### Fixed
+- **Updates now install regardless of internal file ownership.** The
+  overlay updated file-by-file, which needed write access inside every
+  SUBDIRECTORY of the live module — one root-owned lib/ or language/
+  folder and the update half-failed after a green preflight. The updater
+  now assembles the complete new module tree beside the live one (every
+  file created by PHP, so PHP owns it) and swaps it into place with two
+  renames, which need write access only on modules/servers/ and
+  modules/addons/ — exactly what the preflight checks. Hand-added files
+  are carried over; the old tree is parked next to the backup if PHP
+  can't delete it. Verified in a harness with root-owned, locked
+  subdirectories — the precise state that failed on 14 files.
+  Side effect: after one successful update, the whole module tree is
+  PHP-owned and every future update is permission-proof.
+
 ## [1.17.1] - 2026-07-31
 
 ### Fixed
