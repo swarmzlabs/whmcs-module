@@ -510,6 +510,17 @@ function swarmz_buypack(array $params)
 
     // Put it in the cart session (deduped), attached to this service so the
     // addon provisions under it — which is also what the credit grant keys on.
+    //
+    // CRITICAL: WHMCS calls session_write_close() early in client-area
+    // requests to release the session lock, so a plain $_SESSION write from a
+    // module action mutates an in-memory copy that is never persisted — the
+    // cart looked seeded but arrived empty on the next page (v1.17.4 bug).
+    // Re-open the session before writing and close it explicitly after.
+    $reopened = false;
+    if (function_exists('session_status') && session_status() !== PHP_SESSION_ACTIVE) {
+        @session_start();
+        $reopened = true;
+    }
     if (!isset($_SESSION['cart']) || !is_array($_SESSION['cart'])) {
         $_SESSION['cart'] = [];
     }
@@ -525,6 +536,9 @@ function swarmz_buypack(array $params)
     }
     if (!$already) {
         $_SESSION['cart']['addons'][] = ['id' => $packId, 'serviceid' => $serviceId];
+    }
+    if ($reopened) {
+        @session_write_close();
     }
 
     // _swarmz_redirect() only accepts absolute URLs (it guards the SSO path
