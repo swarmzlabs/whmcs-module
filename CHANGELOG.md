@@ -5,6 +5,18 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.3] - 2026-07-31
+
+### Fixed
+- **Ordering a pack works on every order form, themed ones included.** The
+  popup's Order button linked to `cart.php?a=add&aid=…`, which themed order
+  forms rewrite — Lagom One Step routed it to the generic addons listing
+  with the selection lost. The button now POSTs to a module action
+  (`buypack`) that validates the pack against this service's mapped offers,
+  puts it into the WHMCS cart session server-side (attached to the
+  service), and only then opens the cart view — which every order form
+  renders correctly once the item is already in the cart.
+
 ## [1.17.2] - 2026-07-31
 
 ### Fixed
