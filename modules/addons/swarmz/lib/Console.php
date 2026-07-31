@@ -1502,31 +1502,96 @@ class Console
         // Lazy schema: robust even when activate/upgrade never ran on ≥ 1.11.0.
         CreditPacks::ensureSchema();
 
+        // Pack catalog from Swarmz — the plan builder (Dashboard → Settings →
+        // Plans → Credit packs) is the source of truth for what a pack is
+        // worth. Degrades gracefully: an unreachable catalog leaves existing
+        // mappings untouched on their cached amounts.
+        $catalog = [];
+        $catalogError = '';
+        if ($this->apiKey === '') {
+            $catalogError = 'Set your API Key in the module settings to load your Swarmz packs.';
+        } else {
+            try {
+                $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
+                $catalog = $api->listCreditPacks();
+            } catch (\Throwable $e) {
+                $catalogError = 'Could not reach your Swarmz pack catalog right now &mdash; '
+                    . 'already-mapped packs keep working with their cached amounts.';
+            }
+        }
+        $byCode = [];
+        foreach ($catalog as $p) {
+            $code = (string) ($p['code'] ?? '');
+            $pCredits = (int) ($p['credits'] ?? 0);
+            if ($code !== '' && $pCredits > 0) {
+                $byCode[$code] = [
+                    'name'    => (string) (($p['name'] ?? '') !== '' ? $p['name'] : $code),
+                    'credits' => $pCredits,
+                    'cycle'   => (string) ($p['billing_cycle'] ?? 'onetime'),
+                ];
+            }
+        }
+        // Keep cached amounts in step with the catalog whenever a human looks.
+        if (!empty($byCode)) {
+            CreditPacks::refreshFromCatalog($catalog);
+        }
+
         $saved = null;
+        $warnings = [];
         if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_packs_save'])) {
             // WHMCS admin CSRF token (belt and braces — validate when available).
             if (function_exists('check_token')) {
                 check_token('WHMCS.admin.default');
             }
-            $in = isset($_POST['swz_pack_credits']) && is_array($_POST['swz_pack_credits'])
+            // Existing state BEFORE applying — needed to keep a mapping whose
+            // pack has vanished from the catalog (never silently unmap it).
+            $existing = [];
+            foreach (CreditPacks::listAddons() as $row) {
+                $existing[(int) $row['addon_id']] = $row;
+            }
+            $sel = isset($_POST['swz_pack_map']) && is_array($_POST['swz_pack_map'])
+                ? $_POST['swz_pack_map'] : [];
+            $cust = isset($_POST['swz_pack_credits']) && is_array($_POST['swz_pack_credits'])
                 ? $_POST['swz_pack_credits'] : [];
             $count = 0;
-            foreach ($in as $addonId => $credits) {
+            foreach ($sel as $addonId => $choice) {
                 $addonId = (int) $addonId;
-                $credits = (int) $credits; // blank / non-numeric / 0 → unmapped
-                CreditPacks::set($addonId, max(0, $credits));
+                $choice = (string) $choice;
+                if ($choice === 'custom') {
+                    // blank / non-numeric / 0 → unmapped
+                    CreditPacks::set($addonId, max(0, (int) ($cust[$addonId] ?? 0)));
+                } elseif (strpos($choice, 'code:') === 0) {
+                    $code = substr($choice, 5);
+                    $prev = $existing[$addonId] ?? null;
+                    if (isset($byCode[$code])) {
+                        CreditPacks::set($addonId, $byCode[$code]['credits'], $code, $byCode[$code]['name']);
+                    } elseif ($prev && ($prev['pack_code'] ?? '') === $code && (int) $prev['credits'] > 0) {
+                        // Pack gone from the catalog but already mapped: keep
+                        // the cached amount rather than breaking a live seller.
+                        CreditPacks::set($addonId, (int) $prev['credits'], $code, (string) ($prev['pack_name'] ?? ''));
+                    } else {
+                        $warnings[] = 'Pack &ldquo;' . $this->esc($code) . '&rdquo; no longer exists on Swarmz &mdash; addon #' . $addonId . ' left unchanged.';
+                        continue;
+                    }
+                } else {
+                    CreditPacks::set($addonId, 0); // not a credit pack
+                }
                 $count++;
             }
             $saved = $count;
         }
 
-        $intro = '<p class="swz-lede">Sell extra credits as normal WHMCS <strong>Product Addons</strong>. '
-            . 'Three steps: <strong>1)</strong> create an addon under Setup &rarr; Products/Services &rarr; Product Addons '
-            . '(give it a price, assign it to your product, leave &ldquo;Module&rdquo; empty and &ldquo;Hidden&rdquo; unticked) &mdash; '
-            . '<strong>2)</strong> type how many credits it grants in the table below &mdash; <strong>3)</strong> save. Done. '
+        $intro = '<p class="swz-lede">Sell your Swarmz credit packs as normal WHMCS <strong>Product Addons</strong>. '
+            . 'Three steps: <strong>1)</strong> define your packs on Swarmz under Dashboard &rarr; Settings &rarr; Plans &rarr; '
+            . '<strong>Credit packs</strong> &mdash; that catalog decides what each pack is worth, and every sale is counted '
+            . 'per pack right there &mdash; <strong>2)</strong> create a matching addon under Setup &rarr; Products/Services &rarr; '
+            . 'Product Addons (give it its price, assign it to your product, leave &ldquo;Module&rdquo; empty and &ldquo;Hidden&rdquo; '
+            . 'unticked) &mdash; <strong>3)</strong> pick below which Swarmz pack the addon sells, and save. Done. '
             . 'When a customer pays for a mapped addon, the credits land in their workspace within seconds. '
-            . 'Paying the same invoice twice never grants twice, missed grants are healed automatically every day, '
-            . 'and top-up credits stay valid for 12 months.</p>';
+            . 'Pack amounts stay in sync with your catalog automatically (re-checked daily and whenever you open this page), '
+            . 'paying the same invoice twice never grants twice, missed grants are healed every day, '
+            . 'and top-up credits stay valid for 12 months. Want a fixed number that is not in your catalog? '
+            . 'Pick <strong>Custom amount</strong> instead.</p>';
 
         $rows = CreditPacks::listAddons();
         if (empty($rows)) {
@@ -1556,21 +1621,51 @@ class Console
             if (strtolower($r['billingcycle']) === 'free') {
                 $cycle .= ' <span class="swz-badge swz-badge-info" title="A free addon never produces an invoice, so it grants ONCE when the addon is activated instead of on payment">grants on activation</span>';
             }
-            $mapped = $r['credits'] > 0
-                ? '<span class="swz-badge swz-badge-info">' . number_format($r['credits']) . ' credits</span>'
-                : '<span class="swz-muted">&mdash;</span>';
+            if ($r['pack_code'] !== '') {
+                $packLabel = $r['pack_name'] !== '' ? $r['pack_name'] : $r['pack_code'];
+                $mapped = '<span class="swz-badge swz-badge-info">' . $this->esc($packLabel) . '</span> '
+                    . '<span class="swz-muted">' . number_format($r['credits']) . ' credits</span>';
+            } elseif ($r['credits'] > 0) {
+                $mapped = '<span class="swz-badge swz-badge-info">' . number_format($r['credits']) . ' credits</span> '
+                    . '<span class="swz-muted">custom</span>';
+            } else {
+                $mapped = '<span class="swz-muted">&mdash;</span>';
+            }
+
+            $id = (int) $r['addon_id'];
+            $isCustom = $r['credits'] > 0 && $r['pack_code'] === '';
+            $opts = '<option value="">Not a credit pack</option>';
+            foreach ($byCode as $code => $p) {
+                $selAttr = ($r['pack_code'] === $code) ? ' selected' : '';
+                $label = $p['name'] . ' — ' . number_format($p['credits']) . ' credits'
+                    . ($p['cycle'] === 'monthly' ? ' (monthly)' : ' (one-time)');
+                $opts .= '<option value="code:' . $this->esc($code) . '"' . $selAttr . '>'
+                    . $this->esc($label) . '</option>';
+            }
+            if ($r['pack_code'] !== '' && !isset($byCode[$r['pack_code']])) {
+                // Mapped to a pack the catalog no longer lists (archived, or
+                // the catalog is unreachable): keep it selectable + truthful.
+                $label = ($r['pack_name'] !== '' ? $r['pack_name'] : $r['pack_code'])
+                    . ' — ' . number_format($r['credits']) . ' credits (not in your Swarmz catalog)';
+                $opts .= '<option value="code:' . $this->esc($r['pack_code']) . '" selected>'
+                    . $this->esc($label) . '</option>';
+            }
+            $opts .= '<option value="custom"' . ($isCustom ? ' selected' : '') . '>Custom amount&hellip;</option>';
+
             $body .= '<tr>'
                 . '<td><span class="swz-strong">' . $this->esc($r['name']) . '</span>'
-                . ' <span class="swz-muted">#' . (int) $r['addon_id'] . '</span></td>'
+                . ' <span class="swz-muted">#' . $id . '</span></td>'
                 . '<td>' . $cycle . '</td>'
                 . '<td>' . $store . '</td>'
                 . '<td class="swz-num">' . count($assigned) . '</td>'
                 . '<td>' . $mapped . '</td>'
-                . '<td class="swz-num"><input type="number" min="0" step="1" '
-                . 'name="swz_pack_credits[' . (int) $r['addon_id'] . ']" '
-                . 'value="' . ($r['credits'] > 0 ? (int) $r['credits'] : '') . '" '
-                . 'placeholder="0" style="width:110px;padding:5px 8px;border:1px solid #e5e7eb;'
-                . 'border-radius:6px;font-size:13px;text-align:right;" /></td>'
+                . '<td><select name="swz_pack_map[' . $id . ']" data-swz-addon="' . $id . '" '
+                . 'style="max-width:250px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;">'
+                . $opts . '</select> '
+                . '<input type="number" min="0" step="1" name="swz_pack_credits[' . $id . ']" '
+                . 'value="' . ($isCustom ? (int) $r['credits'] : '') . '" placeholder="credits" '
+                . 'style="width:100px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;'
+                . 'text-align:right;' . ($isCustom ? '' : 'display:none;') . '" /></td>'
                 . '</tr>';
         }
 
@@ -1580,22 +1675,36 @@ class Console
             . '<input type="hidden" name="swz_packs_save" value="1" />'
             . '<div class="swz-tablewrap"><table class="swz-table">'
             . '<thead><tr><th>Product addon</th><th>Billing cycle</th><th>Store</th>'
-            . '<th class="swz-num">Products</th><th>Mapped</th><th class="swz-num">Credits per purchase</th></tr></thead>'
+            . '<th class="swz-num">Products</th><th>Currently grants</th><th>Sells as</th></tr></thead>'
             . '<tbody>' . $body . '</tbody>'
             . '</table></div>'
-            . '<p class="swz-note">Set <strong>0</strong> (or blank) to unmap an addon. '
-            . '&ldquo;Products&rdquo; is how many of your products the addon is assigned to &mdash; '
+            . '<p class="swz-note">&ldquo;Products&rdquo; is how many of your products the addon is assigned to &mdash; '
             . 'the client-area &ldquo;buy more&rdquo; link only appears for customers whose product '
-            . 'has at least one mapped addon that is not Hidden. Customers buy packs from the '
-            . 'client-area addon store (<code>cart.php?gid=addons</code>) or, if &ldquo;Show on '
-            . 'Order Form&rdquo; is ticked, during initial checkout too.</p>'
+            . 'has at least one mapped addon that is not Hidden. Pick <strong>Not a credit pack</strong> '
+            . 'to unmap an addon (a custom amount of 0 unmaps too). Credits already granted are never touched.</p>'
             . '<p style="margin:14px 0 0;"><button type="submit" class="swz-btn" '
             . 'style="background:#4f46e5;border-color:#4f46e5;color:#fff;font-weight:600;">Save mappings</button></p>'
-            . '</form>';
+            . '</form>'
+            . '<script>document.querySelectorAll("select[data-swz-addon]").forEach(function(s){'
+            . 'var input=s.parentNode.querySelector("input[type=number]");'
+            . 'var sync=function(){if(input){input.style.display=s.value==="custom"?"":"none";}};'
+            . 's.addEventListener("change",sync);sync();});</script>';
 
         $notice = '';
+        if ($catalogError !== '') {
+            $notice .= $this->notice('warning', $catalogError);
+        } elseif (empty($byCode)) {
+            $notice .= $this->notice('info',
+                'No credit packs defined on Swarmz yet. Add them under <strong>Dashboard &rarr; Settings '
+                . '&rarr; Plans &rarr; Credit packs</strong> and they appear here to map &mdash; '
+                . 'or use <strong>Custom amount</strong> below.'
+            );
+        }
+        foreach ($warnings as $w) {
+            $notice .= $this->notice('warning', $w);
+        }
         if ($saved !== null) {
-            $notice = $this->notice('success', 'Mappings saved.');
+            $notice .= $this->notice('success', 'Mappings saved.');
         }
 
         return $back . $title . $intro . $notice . $form;

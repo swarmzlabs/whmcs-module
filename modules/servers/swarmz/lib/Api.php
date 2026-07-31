@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.18.1';
+    const VERSION = '1.19.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -60,6 +60,9 @@ class Api
 
     /** @var array<int,array>|null Per-instance cache of the listPlans() result. */
     private $plansCache = null;
+
+    /** @var array|null Per-instance cache of platform-plans credit_packs. */
+    private $creditPacksCache = null;
 
     /**
      * @param string $apiKey  e.g. "sk_live_abc123..."
@@ -175,7 +178,35 @@ class Api
         $body = $result['body'];
         $plans = (isset($body['plans']) && is_array($body['plans'])) ? array_values($body['plans']) : [];
         $this->plansCache = $plans;
+        // Same response carries the pack catalog — cache it so a subsequent
+        // listCreditPacks() in the same request costs no extra round-trip.
+        $this->creditPacksCache = (isset($body['credit_packs']) && is_array($body['credit_packs']))
+            ? array_values($body['credit_packs'])
+            : [];
         return $plans;
+    }
+
+    /**
+     * The partner's credit-pack catalog (platform-plans `credit_packs`):
+     * active, unarchived packs the partner defined in the Swarmz dashboard's
+     * plan builder. Each row: code, name, description, credits, price_cents,
+     * currency, billing_cycle ('onetime'|'monthly').
+     *
+     * The catalog is the source of truth for pack mapping — the Console's
+     * Credit Packs page offers these in a dropdown and caches code + credits
+     * in the mapping table, so grants never depend on a live catalog read.
+     * Same per-instance caching and degradation contract as listPlans().
+     *
+     * @param bool $forceRefresh When true, bypass the per-instance cache.
+     * @return array<int,array> The packs array (possibly empty).
+     */
+    public function listCreditPacks(bool $forceRefresh = false): array
+    {
+        if (!$forceRefresh && $this->creditPacksCache !== null) {
+            return $this->creditPacksCache;
+        }
+        $this->listPlans(true);
+        return is_array($this->creditPacksCache) ? $this->creditPacksCache : [];
     }
 
     /**

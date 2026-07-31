@@ -445,8 +445,8 @@ class Helpers
                     'addonId'     => $addonId,
                     'name'        => (string) $r->name,
                     'description' => (string) ($r->description ?? ''),
-                    'credits'     => (int) $map[$addonId],
-                    'creditsFmt'  => number_format((int) $map[$addonId]),
+                    'credits'     => (int) $map[$addonId]['credits'],
+                    'creditsFmt'  => number_format((int) $map[$addonId]['credits']),
                     'cycle'       => ($cycleRaw === 'free' || $price === null || $price <= 0)
                         ? 'free'
                         : ($cycleRaw === 'recurring' ? 'recurring' : 'onetime'),
@@ -912,12 +912,15 @@ class Helpers
     const CREDIT_PACKS_TABLE = 'mod_swarmz_credit_packs';
 
     /**
-     * addon definition id → credits, for every mapped pack. Empty when the
-     * console addon was never activated on ≥ 1.11.0 (no table) or nothing is
-     * mapped. Read directly by table name so the server module never depends
-     * on the addon module's code being loadable.
+     * addon definition id → ['credits' => int, 'pack_code' => string] for
+     * every mapped pack ('' pack_code = hand-typed custom amount). Empty when
+     * the console addon was never activated on ≥ 1.11.0 (no table) or nothing
+     * is mapped. Read directly by table name so the server module never
+     * depends on the addon module's code being loadable; pack_code is read
+     * defensively (column ships in v1.19.0, the upgrade hook may not have
+     * run yet).
      *
-     * @return array<int,int>
+     * @return array<int,array{credits:int,pack_code:string}>
      */
     public static function creditPackMap(): array
     {
@@ -926,15 +929,73 @@ class Helpers
                 return [];
             }
             $map = [];
-            foreach (Capsule::table(self::CREDIT_PACKS_TABLE)->get(['addon_id', 'credits']) as $r) {
+            foreach (Capsule::table(self::CREDIT_PACKS_TABLE)->get() as $r) {
                 $credits = (int) $r->credits;
                 if ($credits > 0) {
-                    $map[(int) $r->addon_id] = $credits;
+                    $map[(int) $r->addon_id] = [
+                        'credits'   => $credits,
+                        'pack_code' => isset($r->pack_code) ? (string) $r->pack_code : '',
+                    ];
                 }
             }
             return $map;
         } catch (\Throwable $e) {
             return [];
+        }
+    }
+
+    /**
+     * Re-sync the cached credits/name of pack-linked mappings from the
+     * platform's pack catalog (platform-plans credit_packs). The plan builder
+     * on Swarmz is the source of truth; the mapping table caches its numbers
+     * so grants and the client panel never depend on a live catalog read.
+     * A pack missing from the catalog — archived or deleted — keeps its last
+     * known credits: an already-sold mapping must never silently stop
+     * granting. Table-name access only (same contract as creditPackMap):
+     * the server module never loads the addon module's code.
+     *
+     * @return int mappings updated
+     */
+    public static function refreshPackCatalogCache(Api $api): int
+    {
+        try {
+            if (!Capsule::schema()->hasTable(self::CREDIT_PACKS_TABLE)) {
+                return 0;
+            }
+            $rows = Capsule::table(self::CREDIT_PACKS_TABLE)->whereNotNull('pack_code')->get();
+            if (count($rows) === 0) {
+                return 0; // nothing pack-linked (or the column predates v1.19.0)
+            }
+            $byCode = [];
+            foreach ($api->listCreditPacks() as $p) {
+                $code = (string) ($p['code'] ?? '');
+                $credits = (int) ($p['credits'] ?? 0);
+                if ($code !== '' && $credits > 0) {
+                    $byCode[$code] = ['credits' => $credits, 'name' => (string) ($p['name'] ?? '')];
+                }
+            }
+            if (empty($byCode)) {
+                return 0; // empty/unreachable catalog — keep the cache as-is
+            }
+            $changed = 0;
+            foreach ($rows as $r) {
+                $code = (string) ($r->pack_code ?? '');
+                if ($code === '' || !isset($byCode[$code])) {
+                    continue;
+                }
+                $cat = $byCode[$code];
+                if ((int) $r->credits !== $cat['credits'] || (string) ($r->pack_name ?? '') !== $cat['name']) {
+                    Capsule::table(self::CREDIT_PACKS_TABLE)->where('id', (int) $r->id)->update([
+                        'credits'    => $cat['credits'],
+                        'pack_name'  => $cat['name'] !== '' ? $cat['name'] : null,
+                        'updated_at' => date('Y-m-d H:i:s'),
+                    ]);
+                    $changed++;
+                }
+            }
+            return $changed;
+        } catch (\Throwable $e) {
+            return 0;
         }
     }
 
@@ -1106,10 +1167,12 @@ class Helpers
             if (!$ha) {
                 return;
             }
-            $credits = $map[(int) $ha->addonid] ?? 0;
+            $entry = $map[(int) $ha->addonid] ?? null;
+            $credits = is_array($entry) ? (int) ($entry['credits'] ?? 0) : 0;
             if ($credits <= 0) {
                 return; // not a mapped pack
             }
+            $packCode = is_array($entry) ? (string) ($entry['pack_code'] ?? '') : '';
             $serviceId = (int) $ha->hostingid;
             $tenantId = self::getTenantId($serviceId);
             if ($tenantId === null || $tenantId === '') {
@@ -1141,6 +1204,12 @@ class Helpers
                     ? 'whmcs-inv' . $invoiceId . '-ha' . $haId
                     : 'whmcs-ha' . $haId . '-act',
             ];
+            // Attribution only — tells the platform WHICH partner-defined pack
+            // this grant sold as (the dashboard counts sales per pack). The
+            // amount above remains authoritative; older platforms ignore it.
+            if ($packCode !== '') {
+                $body['pack_code'] = $packCode;
+            }
             $result = $api->postPlatform('platform-topup', $body);
             self::creditPackLog('CreditPack.Granted', $body + ['serviceid' => $serviceId], $result['body'] ?? [], $api->maskedKey());
         } catch (SwarmzApiException $e) {
