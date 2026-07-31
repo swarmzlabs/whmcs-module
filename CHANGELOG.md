@@ -5,6 +5,25 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.19.0] - 2026-07-31
+
+### Changed
+- **Credit packs now map to your Swarmz catalog.** The console's Credit
+  Packs page offers a dropdown of the packs you define on Swarmz
+  (Dashboard → Settings → Plans → Credit packs) instead of a hand-typed
+  number — the catalog is the source of truth for what each pack is
+  worth. Cached amounts re-sync automatically (daily, and whenever the
+  page is opened), and every grant now reports which pack it sold as, so
+  your Swarmz dashboard shows a per-pack **Sold** count. A **Custom
+  amount** option keeps hand-typed mappings available, and existing
+  mappings keep working unchanged. A pack removed from your catalog
+  never silently unmaps — it keeps granting its last known amount and is
+  labeled truthfully in the dropdown.
+
+### Added
+- `mod_swarmz_credit_packs` gains nullable `pack_code`/`pack_name`
+  columns (additive only; existing rows and grants are untouched).
+
 ## [1.18.1] - 2026-07-31
 
 ### Changed

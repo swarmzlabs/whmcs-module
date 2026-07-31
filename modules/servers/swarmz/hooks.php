@@ -229,6 +229,21 @@ function _swarmz_cron_reconcile(): void
     //      roll early. ──
     _swarmz_cron_refreshActiveServices($services);
 
+    // ── 4b. Pack-catalog cache refresh (v1.19.0). The plan builder on Swarmz
+    //      is the source of truth for pack credits; mappings only CACHE the
+    //      amount so grants never need a live catalog read. Re-sync the cache
+    //      daily (and before the sweep below, so healed grants use fresh
+    //      amounts). Best-effort: an unreachable catalog keeps the last
+    //      known numbers. ──
+    try {
+        $packsChanged = Helpers::refreshPackCatalogCache($api);
+        if ($packsChanged > 0) {
+            _swarmz_hookLog('DailyCronJob.PackCatalogRefreshed', [], ['mappings_updated' => $packsChanged], $api->maskedKey());
+        }
+    } catch (\Throwable $e) {
+        // Best-effort; retried tomorrow.
+    }
+
     // ── 5. Credit-pack safety net (v1.11.0). Re-grant mapped packs on each
     //      active service's recent paid invoices. The platform's idempotency
     //      key makes this a no-op for anything already granted; it only heals

@@ -96,6 +96,13 @@ updater compares `Api::VERSION` against the latest tag.
   never from timestamps or random values.
 - **Payment is the trigger for invoiced packs; activation for invoice-less
   ones.** Don't add grant paths that can fire for unpaid invoices.
+- **The Swarmz pack catalog is the source of truth; the mapping table is a
+  cache.** Pack-linked mappings (`pack_code` set) cache the catalog's
+  credits so grants and the client panel never need a live API call; the
+  cache re-syncs on console view + daily cron. `pack_code` rides along on
+  `platform-topup` as attribution only — the `amount` stays authoritative.
+  A pack missing from the catalog keeps its last known credits: never
+  silently unmap or zero a mapping that customers may still be buying.
 - **Hooks never throw into WHMCS.** Every hook body is wrapped; a Swarmz API
   failure must not break the host's cron, invoicing, or checkout.
 - **Cycles never roll early.** Renewal refreshes anchor strictly at the

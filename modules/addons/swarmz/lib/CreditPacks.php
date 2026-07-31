@@ -38,18 +38,35 @@ class CreditPacks
     {
         try {
             $schema = Capsule::schema();
-            if ($schema->hasTable(self::TABLE)) {
+            if (!$schema->hasTable(self::TABLE)) {
+                $schema->create(self::TABLE, function ($table) {
+                    $table->increments('id');
+                    // tbladdons.id — the addon DEFINITION (not a client's instance).
+                    $table->unsignedInteger('addon_id')->unique();
+                    // Whole credits granted per paid invoice line for this addon.
+                    $table->unsignedInteger('credits');
+                    // Platform pack this mapping mirrors (platform_credit_packs
+                    // .code on Swarmz) — null for a hand-typed custom amount.
+                    // credits is the CACHE of the pack's amount, refreshed on
+                    // console view + daily cron; grants read credits, so a
+                    // mapping keeps working even if the platform is briefly
+                    // unreachable or the pack is archived.
+                    $table->string('pack_code', 40)->nullable();
+                    $table->string('pack_name', 100)->nullable();
+                    $table->dateTime('created_at');
+                    $table->dateTime('updated_at');
+                });
                 return;
             }
-            $schema->create(self::TABLE, function ($table) {
-                $table->increments('id');
-                // tbladdons.id — the addon DEFINITION (not a client's instance).
-                $table->unsignedInteger('addon_id')->unique();
-                // Whole credits granted per paid invoice line for this addon.
-                $table->unsignedInteger('credits');
-                $table->dateTime('created_at');
-                $table->dateTime('updated_at');
-            });
+            // Additive upgrades only — the prime invariant says updates never
+            // destroy host data, so existing columns are never altered or
+            // dropped. v1.19.0 added the platform-pack reference columns.
+            if (!$schema->hasColumn(self::TABLE, 'pack_code')) {
+                $schema->table(self::TABLE, function ($table) {
+                    $table->string('pack_code', 40)->nullable();
+                    $table->string('pack_name', 100)->nullable();
+                });
+            }
         } catch (\Throwable $e) {
             // Schema plumbing is best-effort — a failure surfaces on first use.
         }
@@ -86,8 +103,14 @@ class CreditPacks
         try {
             $mapped = [];
             if (self::schemaReady()) {
-                foreach (Capsule::table(self::TABLE)->get(['addon_id', 'credits']) as $r) {
-                    $mapped[(int) $r->addon_id] = (int) $r->credits;
+                // Full-row read: pack_code/pack_name may not exist yet on an
+                // install whose upgrade hook hasn't run — read them defensively.
+                foreach (Capsule::table(self::TABLE)->get() as $r) {
+                    $mapped[(int) $r->addon_id] = [
+                        'credits'   => (int) $r->credits,
+                        'pack_code' => isset($r->pack_code) ? (string) $r->pack_code : '',
+                        'pack_name' => isset($r->pack_name) ? (string) $r->pack_name : '',
+                    ];
                 }
             }
             $out = [];
@@ -102,7 +125,9 @@ class CreditPacks
                     'showorder'    => ((int) ($r->showorder ?? 0)) === 1,
                     'hidden'       => ((int) ($r->hidden ?? 0)) === 1,
                     'retired'      => ((int) ($r->retired ?? 0)) === 1,
-                    'credits'      => $mapped[$id] ?? 0,
+                    'credits'      => $mapped[$id]['credits'] ?? 0,
+                    'pack_code'    => $mapped[$id]['pack_code'] ?? '',
+                    'pack_name'    => $mapped[$id]['pack_name'] ?? '',
                 ];
             }
             return $out;
@@ -114,8 +139,13 @@ class CreditPacks
     /**
      * Set (or clear, with 0) the credit amount for an addon definition.
      * Upsert keyed on addon_id; 0 removes the mapping entirely.
+     *
+     * $packCode links the mapping to a platform pack (platform_credit_packs
+     * .code); pass null/'' for a hand-typed custom amount. The grant path
+     * forwards the code to /platform-topup so the Swarmz dashboard can count
+     * sales per pack.
      */
-    public static function set(int $addonId, int $credits): void
+    public static function set(int $addonId, int $credits, ?string $packCode = null, ?string $packName = null): void
     {
         if ($addonId <= 0 || !self::schemaReady()) {
             return;
@@ -126,19 +156,86 @@ class CreditPacks
                 Capsule::table(self::TABLE)->where('addon_id', $addonId)->delete();
                 return;
             }
-            $updated = Capsule::table(self::TABLE)
-                ->where('addon_id', $addonId)
-                ->update(['credits' => $credits, 'updated_at' => $now]);
-            if ($updated === 0) {
-                Capsule::table(self::TABLE)->insert([
-                    'addon_id'   => $addonId,
-                    'credits'    => $credits,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]);
+            $values = [
+                'credits'    => $credits,
+                'pack_code'  => ($packCode !== null && $packCode !== '') ? $packCode : null,
+                'pack_name'  => ($packName !== null && $packName !== '') ? $packName : null,
+                'updated_at' => $now,
+            ];
+            try {
+                $updated = Capsule::table(self::TABLE)
+                    ->where('addon_id', $addonId)
+                    ->update($values);
+                if ($updated === 0) {
+                    Capsule::table(self::TABLE)->insert(
+                        ['addon_id' => $addonId, 'created_at' => $now] + $values
+                    );
+                }
+            } catch (\Throwable $e) {
+                // Progressive fallback: pack columns missing (upgrade hook not
+                // run yet) — save the credits so the mapping still works.
+                unset($values['pack_code'], $values['pack_name']);
+                $updated = Capsule::table(self::TABLE)
+                    ->where('addon_id', $addonId)
+                    ->update($values);
+                if ($updated === 0) {
+                    Capsule::table(self::TABLE)->insert(
+                        ['addon_id' => $addonId, 'created_at' => $now] + $values
+                    );
+                }
             }
         } catch (\Throwable $e) {
             // Surface nothing — the Console re-reads and shows the real state.
         }
+    }
+
+    /**
+     * Refresh the cached credits/name of every pack-linked mapping from the
+     * platform catalog (the plan builder is the source of truth; this table
+     * only caches its numbers so grants and the client panel never need a
+     * live API call). A pack missing from the catalog — archived or deleted
+     * on Swarmz — keeps its last known credits: an already-sold mapping must
+     * never silently stop granting.
+     *
+     * @param array<int,array<string,mixed>> $catalog platform-plans credit_packs rows
+     * @return int mappings updated
+     */
+    public static function refreshFromCatalog(array $catalog): int
+    {
+        if (empty($catalog) || !self::schemaReady()) {
+            return 0;
+        }
+        $byCode = [];
+        foreach ($catalog as $p) {
+            $code = (string) ($p['code'] ?? '');
+            $credits = (int) ($p['credits'] ?? 0);
+            if ($code !== '' && $credits > 0) {
+                $byCode[$code] = ['credits' => $credits, 'name' => (string) ($p['name'] ?? '')];
+            }
+        }
+        if (empty($byCode)) {
+            return 0;
+        }
+        $changed = 0;
+        try {
+            foreach (Capsule::table(self::TABLE)->whereNotNull('pack_code')->get() as $r) {
+                $code = (string) ($r->pack_code ?? '');
+                if ($code === '' || !isset($byCode[$code])) {
+                    continue;
+                }
+                $cat = $byCode[$code];
+                if ((int) $r->credits !== $cat['credits'] || (string) ($r->pack_name ?? '') !== $cat['name']) {
+                    Capsule::table(self::TABLE)->where('id', (int) $r->id)->update([
+                        'credits'    => $cat['credits'],
+                        'pack_name'  => $cat['name'] !== '' ? $cat['name'] : null,
+                        'updated_at' => date('Y-m-d H:i:s'),
+                    ]);
+                    $changed++;
+                }
+            }
+        } catch (\Throwable $e) {
+            // pack_code column missing — nothing pack-linked to refresh.
+        }
+        return $changed;
     }
 }
