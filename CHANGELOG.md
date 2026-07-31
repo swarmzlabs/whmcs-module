@@ -5,6 +5,17 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.4] - 2026-07-31
+
+### Fixed
+- **Order now actually opens the cart.** v1.17.3 seeded the cart session
+  correctly but its redirect passed a relative URL to a helper that only
+  accepts absolute ones (an SSO safety guard) — so the browser stayed on
+  the product page with WHMCS's "Action Completed Successfully!" banner.
+  The handoff now resolves the installation's SystemURL and redirects with
+  **303 See Other**, the proper POST-to-GET code — which also removes the
+  "confirm form resubmission" prompt on reload.
+
 ## [1.17.3] - 2026-07-31
 
 ### Fixed
