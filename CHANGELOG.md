@@ -5,6 +5,15 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.17.5] - 2026-07-31
+
+### Fixed
+- **The pack now actually arrives in the cart.** WHMCS closes the session
+  early in client-area requests, so v1.17.4's cart write mutated an
+  in-memory copy that was never saved — the checkout opened with an empty
+  cart. The handoff now re-opens the session, writes, and closes it again,
+  verified with a two-phase session harness.
+
 ## [1.17.4] - 2026-07-31
 
 ### Fixed
