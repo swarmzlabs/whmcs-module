@@ -104,7 +104,7 @@
 .swz-pack-price { font-size: 13px; font-weight: 650; opacity: .75; white-space: nowrap; }
 .swz-pack-credits { font-size: 17px; font-weight: 800; white-space: nowrap; letter-spacing: -.01em; text-align: right; }
 .swz-pack-credits small { font-size: 11px; font-weight: 600; opacity: .5; display: block; }
-.swz-pack-order { display: inline-block; padding: 9px 17px; border-radius: 11px; background: var(--swz-accent); color: #fff !important; font-size: 13px; font-weight: 700; text-decoration: none !important; white-space: nowrap; transition: opacity .15s ease, transform .15s ease; }
+.swz-pack-order { display: inline-block; padding: 9px 17px; border: 0; cursor: pointer; border-radius: 11px; background: var(--swz-accent); color: #fff !important; font-size: 13px; font-weight: 700; text-decoration: none !important; white-space: nowrap; transition: opacity .15s ease, transform .15s ease; }
 .swz-pack-order:hover { opacity: .88; transform: translateY(-1px); }
 @media (max-width: 520px) { .swz-pack { flex-wrap: wrap; } .swz-pack-order { width: 100%; text-align: center; } }
 
@@ -473,7 +473,18 @@
                         </p>
                     </div>
                     <div class="swz-pack-credits">{$pack.creditsFmt}<small>{$ct|escape}</small></div>
-                    <a class="swz-pack-order" href="{$pack.orderUrl|escape}">{$L.order_now}</a>
+                    {* POST to the buypack module action: it puts the pack in
+                       the cart SESSION server-side, then opens the cart view —
+                       works on stock order forms AND themed ones (Lagom One
+                       Step rewrites cart.php?a=add deep links to the generic
+                       addons listing, so we never rely on those). *}
+                    <form action="clientarea.php?action=productdetails" method="post" style="display:inline;margin:0;">
+                        <input type="hidden" name="id" value="{$serviceId}" />
+                        <input type="hidden" name="modop" value="custom" />
+                        <input type="hidden" name="a" value="buypack" />
+                        <input type="hidden" name="pack" value="{$pack.addonId}" />
+                        <button type="submit" class="swz-pack-order">{$L.order_now}</button>
+                    </form>
                 </div>
             {foreachelse}
                 <p class="swz-modal-sub">{$L.no_packs}</p>

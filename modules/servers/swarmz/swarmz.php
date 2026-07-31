@@ -453,7 +453,7 @@ function swarmz_ServiceSingleSignOn(array $params)
  */
 function swarmz_ClientAreaAllowedFunctions()
 {
-    return ['launch'];
+    return ['launch', 'buypack'];
 }
 
 /**
@@ -472,6 +472,65 @@ function swarmz_ClientAreaAllowedFunctions()
  * @return string Empty string is never returned on success (we exit); a
  *                non-empty error string on failure.
  */
+/**
+ * Credit-pack checkout handoff (custom client-area action, POSTed from the
+ * packs modal as modop=custom&a=buypack&pack=<addonId>).
+ *
+ * ORDER-FORM-PROOF BY DESIGN: deep links like cart.php?a=add&aid=N are
+ * rewritten by themed order forms (Lagom One Step routes them to the generic
+ * /order/addons listing, losing the selection). So instead of linking into
+ * any order form, we put the addon into the WHMCS cart SESSION ourselves —
+ * validated against the mapped packs for THIS service — and only then hand
+ * the browser to cart.php?a=view. Every order form, stock or themed, renders
+ * its own cart correctly once the item is already in the session.
+ *
+ * @param array $params
+ * @return string '' on redirect; an error message for WHMCS to render.
+ */
+function swarmz_buypack(array $params)
+{
+    $serviceId = (int) ($params['serviceid'] ?? 0);
+    $packId = (int) ($_REQUEST['pack'] ?? 0);
+    if ($serviceId <= 0 || $packId <= 0) {
+        return 'Swarmz: that pack link is incomplete. Please try again from the service page.';
+    }
+
+    // Authoritative validation: the addon must be one of THIS service's
+    // purchasable mapped packs (assigned to the product, not hidden/retired).
+    $valid = false;
+    foreach (Helpers::creditPackOffers($serviceId) as $offer) {
+        if ((int) $offer['addonId'] === $packId) {
+            $valid = true;
+            break;
+        }
+    }
+    if (!$valid) {
+        return 'Swarmz: that pack is not available for this service.';
+    }
+
+    // Put it in the cart session (deduped), attached to this service so the
+    // addon provisions under it — which is also what the credit grant keys on.
+    if (!isset($_SESSION['cart']) || !is_array($_SESSION['cart'])) {
+        $_SESSION['cart'] = [];
+    }
+    if (!isset($_SESSION['cart']['addons']) || !is_array($_SESSION['cart']['addons'])) {
+        $_SESSION['cart']['addons'] = [];
+    }
+    $already = false;
+    foreach ($_SESSION['cart']['addons'] as $a) {
+        if (is_array($a) && (int) ($a['id'] ?? 0) === $packId && (int) ($a['serviceid'] ?? 0) === $serviceId) {
+            $already = true;
+            break;
+        }
+    }
+    if (!$already) {
+        $_SESSION['cart']['addons'][] = ['id' => $packId, 'serviceid' => $serviceId];
+    }
+
+    _swarmz_redirect('cart.php?a=view');
+    return '';
+}
+
 function swarmz_launch(array $params)
 {
     $result = _swarmz_doSso($params);
