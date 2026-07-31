@@ -5,6 +5,16 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.19.1] - 2026-07-31
+
+### Changed
+- **Credit Packs page shows only your packs.** The console's mapping
+  table now lists just the addons that are mapped as credit packs — not
+  the whole addon catalog. A "Show all addons" link reveals the rest
+  when you want to map a new one (and the first run, before anything is
+  mapped, still shows everything). Hidden rows submit nothing, so the
+  filter can never unmap an addon.
+
 ## [1.19.0] - 2026-07-31
 
 ### Changed
