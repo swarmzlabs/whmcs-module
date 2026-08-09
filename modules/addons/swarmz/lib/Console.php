@@ -1185,6 +1185,20 @@ class Console
         return $url;
     }
 
+    /**
+     * CSRF hidden-input markup for admin POST forms. WHMCS's generate_token()
+     * is not guaranteed to return a string — depending on the WHMCS version
+     * and CSRF configuration it can return null — so every form must source
+     * its token here, never from generate_token() directly.
+     */
+    private function adminFormToken(): string
+    {
+        if (!function_exists('generate_token')) {
+            return '';
+        }
+        return (string) generate_token('WHMCS.admin.default');
+    }
+
     private function safePeriod(string $p): string
     {
         return in_array($p, ['current_month', 'last_month', 'ytd'], true) ? $p : 'current_month';
@@ -1348,7 +1362,7 @@ class Console
                 . 'hand-edited files are detected and listed here individually.');
         }
 
-        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $token = $this->adminFormToken();
         $confirm = '';
         $btnAttrs = '';
         if ($needsConfirm) {
@@ -1651,7 +1665,7 @@ class Console
             }
         }
 
-        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $token = $this->adminFormToken();
         $showAll = !empty($_REQUEST['swz_all']);
 
         $notice = '';
@@ -2206,7 +2220,7 @@ class Console
                 . '</label>';
         }
 
-        $token = function_exists('generate_token') ? generate_token('WHMCS.admin.default') : '';
+        $token = $this->adminFormToken();
         $form = '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'appearance'])) . '">'
             . $token
             . '<input type="hidden" name="swz_appearance_save" value="1" />'
