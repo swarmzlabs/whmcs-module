@@ -5,6 +5,15 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.20.1] - 2026-08-10
+
+### Fixed
+- **Opening the Credit Packs page no longer crashes on installs where
+  WHMCS's `generate_token()` returns null.** The v1.20.0 catalog view
+  passed the CSRF token into a string-typed renderer, so a null from
+  WHMCS became a fatal `TypeError`. All admin forms now source their
+  token through one null-safe helper.
+
 ## [1.20.0] - 2026-07-31
 
 ### Changed
