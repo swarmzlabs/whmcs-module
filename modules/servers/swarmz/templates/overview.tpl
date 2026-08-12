@@ -57,6 +57,8 @@
 .swz-launch:hover { transform: translateY(-1px); }
 .swz-launch .swz-arrow { transition: transform .15s ease; display: inline-block; }
 .swz-launch:hover .swz-arrow { transform: translateX(3px); }
+/* RTL: the "forward" arrow points and travels the other way. */
+[dir="rtl"] .swz-launch:hover .swz-arrow { transform: translateX(-3px); }
 .swz-sect { margin-top: 34px; }
 .swz-sect-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
 .swz-sect-title { font-size: 12px; font-weight: 700; opacity: .55; text-transform: uppercase; letter-spacing: .07em; margin: 0; }
@@ -102,7 +104,7 @@
 .swz-pack-meta { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
 .swz-pack-chip { font-size: 10.5px; font-weight: 650; border-radius: 999px; padding: 3px 9px; white-space: nowrap; background: color-mix(in srgb, var(--swz-accent) 12%, transparent); color: var(--swz-accent); }
 .swz-pack-price { font-size: 13px; font-weight: 650; opacity: .75; white-space: nowrap; }
-.swz-pack-credits { font-size: 17px; font-weight: 800; white-space: nowrap; letter-spacing: -.01em; text-align: right; }
+.swz-pack-credits { font-size: 17px; font-weight: 800; white-space: nowrap; letter-spacing: -.01em; text-align: end; }
 .swz-pack-credits small { font-size: 11px; font-weight: 600; opacity: .5; display: block; }
 .swz-pack-order { display: inline-block; padding: 9px 17px; border: 0; cursor: pointer; border-radius: 11px; background: var(--swz-accent); color: #fff !important; font-size: 13px; font-weight: 700; text-decoration: none !important; white-space: nowrap; transition: opacity .15s ease, transform .15s ease; }
 .swz-pack-order:hover { opacity: .88; transform: translateY(-1px); }
@@ -119,7 +121,7 @@
 
 /* ================= THEME: swarmz — flat hairline dashboard ================= */
 .swz-t-swarmz { --swz-accent: #f97316; font-size: 13px; }
-.swz-t-swarmz .swz-hero { border: 1px solid rgba(128,128,128,.22); border-left: 3px solid var(--swz-accent); border-radius: 6px; padding: 16px 18px; background: rgba(128,128,128,.025); }
+.swz-t-swarmz .swz-hero { border: 1px solid rgba(128,128,128,.22); border-inline-start: 3px solid var(--swz-accent); border-radius: 6px; padding: 16px 18px; background: rgba(128,128,128,.025); }
 .swz-t-swarmz .swz-hero-title { font-size: 16px; font-weight: 650; }
 .swz-t-swarmz .swz-hero-sub { font-size: 12.5px; }
 .swz-t-swarmz .swz-launch { font-size: 13px !important; font-weight: 600 !important; padding: 9px 16px !important; border-radius: 6px !important; background: var(--swz-accent) !important; border: 0 !important; color: #fff !important; box-shadow: none; }
@@ -184,14 +186,14 @@
 .swz-t-carbon .swz-card:last-child { border-bottom: 0; }
 .swz-t-carbon .swz-card-label { flex: 0 0 235px; }
 .swz-t-carbon .swz-bar { flex: 1 1 auto; order: 2; height: 4px; background: rgba(255,255,255,.09); }
-.swz-t-carbon .swz-num { order: 3; flex: 0 0 118px; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 650; }
-.swz-t-carbon .swz-sub { order: 4; flex: 0 0 215px; text-align: left; font-size: 11px; opacity: .45; }
+.swz-t-carbon .swz-num { order: 3; flex: 0 0 118px; text-align: end; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 650; }
+.swz-t-carbon .swz-sub { order: 4; flex: 0 0 215px; text-align: start; font-size: 11px; opacity: .45; }
 .swz-t-carbon .swz-bar-fill { box-shadow: 0 0 10px color-mix(in srgb, var(--swz-accent) 60%, transparent); }
 .swz-t-carbon .swz-low .swz-num, .swz-t-carbon .swz-low .swz-card-label { color: #ff6369; }
 .swz-t-carbon .swz-limits { padding: 12px 16px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: #14171a; }
 .swz-t-carbon .swz-buy-btn { border: 1px solid var(--swz-accent); border-radius: 7px; padding: 5px 12px; font-size: 12px; }
 .swz-t-carbon .swz-footer a { color: var(--swz-accent); }
-@media (max-width: 640px) { .swz-t-carbon .swz-card { flex-wrap: wrap; } .swz-t-carbon .swz-sub { text-align: left; } }
+@media (max-width: 640px) { .swz-t-carbon .swz-card { flex-wrap: wrap; } .swz-t-carbon .swz-sub { text-align: start; } }
 
 /* ================= THEME: editorial — boxless typographic ================= */
 .swz-t-editorial { --swz-accent: #b45309; }
@@ -201,8 +203,8 @@
 .swz-t-editorial .swz-launch:hover { background: var(--swz-accent) !important; border-color: var(--swz-accent) !important; color: #fff !important; }
 .swz-t-editorial .swz-sect-title { font-family: Georgia, 'Times New Roman', serif; font-style: italic; text-transform: none; letter-spacing: 0; font-size: 15px; font-weight: 500; opacity: .7; }
 .swz-t-editorial .swz-cards { gap: 0; border-top: 1px solid rgba(128,128,128,.25); }
-.swz-t-editorial .swz-card { border: 0; border-right: 1px solid rgba(128,128,128,.18); border-radius: 0; padding: 18px 20px 20px 14px; background: transparent; }
-.swz-t-editorial .swz-card:last-child { border-right: 0; }
+.swz-t-editorial .swz-card { border: 0; border-inline-end: 1px solid rgba(128,128,128,.18); border-radius: 0; padding-block: 18px 20px; padding-inline: 14px 20px; background: transparent; }
+.swz-t-editorial .swz-card:last-child { border-inline-end: 0; }
 .swz-t-editorial .swz-card-label { letter-spacing: .12em; font-size: 10.5px; }
 .swz-t-editorial .swz-num { font-family: Georgia, 'Times New Roman', serif; font-weight: 400; font-size: 34px; letter-spacing: -.02em; }
 .swz-t-editorial .swz-num small { font-family: inherit; font-size: 16px; }
@@ -211,7 +213,7 @@
 .swz-t-editorial .swz-bar-fill { border-radius: 0; }
 .swz-t-editorial .swz-limits { border-top: 1px solid rgba(128,128,128,.25); border-bottom: 1px solid rgba(128,128,128,.25); padding: 14px 2px; }
 .swz-t-editorial .swz-buy-btn { border-bottom: 1.5px solid var(--swz-accent); border-radius: 0; padding: 0 0 1px; }
-@media (max-width: 640px) { .swz-t-editorial .swz-card { border-right: 0; border-bottom: 1px solid rgba(128,128,128,.18); } }
+@media (max-width: 640px) { .swz-t-editorial .swz-card { border-inline-end: 0; border-bottom: 1px solid rgba(128,128,128,.18); } }
 
 /* ============ Dark-page adaptation (host WHMCS theme) ============ */
 /* A tiny script tags the area swz-dark when the page background is dark, so
@@ -249,7 +251,7 @@
 .swz-t-editorial .swz-modal-close { border-radius: 0; background: transparent; border: 1px solid currentColor; }
 </style>
 
-<div class="swz-area swz-t-{$theme}"{if $accentHex} style="--swz-accent: {$accentHex};"{/if}>
+<div class="swz-area swz-t-{$theme}" dir="{$dir|default:'ltr'}"{if $accentHex} style="--swz-accent: {$accentHex};"{/if}>
 
     {* ---------- Hero ---------- *}
     <div class="swz-hero">
@@ -266,7 +268,7 @@
                 <input type="hidden" name="id" value="{$serviceId}" />
                 <input type="hidden" name="modop" value="custom" />
                 <input type="hidden" name="a" value="launch" />
-                <button type="submit" class="btn btn-primary swz-launch">{$editorButtonLabel|default:'Open AI Editor'|escape} <span class="swz-arrow">&rarr;</span></button>
+                <button type="submit" class="btn btn-primary swz-launch">{$editorButtonLabel|default:'Open AI Editor'|escape} <span class="swz-arrow">{if $isRtl}&larr;{else}&rarr;{/if}</span></button>
             </form>
         {/if}
     </div>
@@ -284,7 +286,7 @@
             <div class="swz-sect-head">
                 <p class="swz-sect-title">{$L.section_your|replace:'%s':$ct|escape}</p>
                 {if $creditPacks|@count > 0}
-                    <button type="button" class="swz-buy-btn" onclick="swzOpenPacks()">{$L.buy_button} <span class="swz-arrow">&rarr;</span></button>
+                    <button type="button" class="swz-buy-btn" onclick="swzOpenPacks()">{$L.buy_button} <span class="swz-arrow">{if $isRtl}&larr;{else}&rarr;{/if}</span></button>
                 {/if}
             </div>
 
