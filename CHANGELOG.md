@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.20.2] - 2026-08-12
 
+### Added
+- **Arabic (العربية) translation for the client-area panel.** A customer
+  whose WHMCS language is Arabic now sees the workspace panel fully in
+  Arabic — every string, right-to-left. Joins the existing German,
+  French, Italian and Spanish translations.
+
 ### Fixed
 - **Right-to-left localization for the client-area panel.** For a customer
   whose WHMCS language is a right-to-left locale (Arabic, Hebrew, Farsi,

@@ -10,6 +10,7 @@
   "modules\/addons\/swarmz\/promptbox.php": "b80b69f7efb1cc2c11294008a415443cf98f7cebbe674ab8fe72581f322c012a",
   "modules\/addons\/swarmz\/swarmz.php": "8a77499ef988924b6fa6a873ea53d2cfdb762395d41f63ceca35eac341bcf964",
   "modules\/servers\/swarmz\/hooks.php": "b87486484d286723b4b7dc3748160b556e89932f528e167e4a023c691f6cb357",
+  "modules\/servers\/swarmz\/language\/arabic.php": "017d7e20df63276541b25da5a5db712db99e2804da689465402c2b471f1c703b",
   "modules\/servers\/swarmz\/language\/english.php": "0ef317028e0ebd401efdb7398cbe1f43a213d95698034df9d5f62c02e8d0d6cf",
   "modules\/servers\/swarmz\/language\/french.php": "52ae03c3700a8cdcc34a481fd7327363e57798c7091ad40271831c77634c5e99",
   "modules\/servers\/swarmz\/language\/german.php": "1ccad641e695cb143f832dd2d6feaaabc1dc2eeb5700cc436aa7d9933d24b737",

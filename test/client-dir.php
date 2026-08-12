@@ -69,11 +69,14 @@ $GLOBALS['CONFIG'] = ['Language' => 'english'];
 $check('global english → ltr', Helpers::clientDir([]), 'ltr');
 unset($GLOBALS['CONFIG']);
 
-// clientLang must still resolve without an rtl file present (english fallback).
-echo "\n--- clientLang fallback intact for an rtl locale ---\n";
+// An Arabic client now gets the shipped Arabic strings (arabic.php), overlaid
+// on the English base so any un-translated key still falls back cleanly.
+echo "\n--- clientLang loads Arabic strings for an rtl locale ---\n";
 $lang = Helpers::clientLang(['clientsdetails' => ['language' => 'arabic']]);
-$check('arabic client still gets english strings (no arabic.php shipped)',
-    isset($lang['buy_button']) && $lang['buy_button'] === 'Buy more', true);
+$check('arabic client gets the Arabic buy_button',
+    isset($lang['buy_button']) && $lang['buy_button'] === 'اشترِ المزيد', true);
+$check('english base still present under the overlay (workspace_title translated)',
+    isset($lang['workspace_title']) && $lang['workspace_title'] === 'مساحة عملك', true);
 
 echo "\n";
 if ($failed > 0) {
