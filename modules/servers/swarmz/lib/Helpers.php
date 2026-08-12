@@ -487,23 +487,7 @@ class Helpers
                 $base = $loaded;
             }
         }
-        // Resolution order matters: the client-area language SWITCHER stores
-        // its choice in the WHMCS session only — the profile language stays
-        // whatever it was. Reading just clientsdetails.language left the
-        // panel in English after a switch (found live, 2026-07-31).
-        $lang = '';
-        foreach (['Language', 'language'] as $sessKey) {
-            if (isset($_SESSION[$sessKey]) && is_string($_SESSION[$sessKey]) && $_SESSION[$sessKey] !== '') {
-                $lang = strtolower(trim($_SESSION[$sessKey]));
-                break;
-            }
-        }
-        if ($lang === '') {
-            $lang = strtolower(trim((string) ($params['clientsdetails']['language'] ?? '')));
-        }
-        if ($lang === '' && isset($GLOBALS['CONFIG']['Language'])) {
-            $lang = strtolower(trim((string) $GLOBALS['CONFIG']['Language']));
-        }
+        $lang = self::resolveClientLangName($params);
         if ($lang !== '' && $lang !== 'english' && preg_match('/^[a-z]+$/', $lang)) {
             $file = $dir . '/' . $lang . '.php';
             if (is_file($file)) {
@@ -514,6 +498,58 @@ class Helpers
             }
         }
         return $base;
+    }
+
+    /**
+     * The client's active WHMCS language NAME (lowercase word, e.g. 'arabic'),
+     * or '' when none can be resolved. Shared by clientLang() and clientDir()
+     * so the panel's strings and its text direction always agree.
+     *
+     * Resolution order matters: the client-area language SWITCHER stores its
+     * choice in the WHMCS session only — the profile language stays whatever
+     * it was. Reading just clientsdetails.language left the panel in English
+     * after a switch (found live, 2026-07-31).
+     */
+    private static function resolveClientLangName(array $params): string
+    {
+        foreach (['Language', 'language'] as $sessKey) {
+            if (isset($_SESSION[$sessKey]) && is_string($_SESSION[$sessKey]) && $_SESSION[$sessKey] !== '') {
+                return strtolower(trim($_SESSION[$sessKey]));
+            }
+        }
+        $lang = strtolower(trim((string) ($params['clientsdetails']['language'] ?? '')));
+        if ($lang !== '') {
+            return $lang;
+        }
+        if (isset($GLOBALS['CONFIG']['Language'])) {
+            return strtolower(trim((string) $GLOBALS['CONFIG']['Language']));
+        }
+        return '';
+    }
+
+    /**
+     * WHMCS language names that read right-to-left. WHMCS stores the language
+     * as a full lowercase word (e.g. 'arabic'), so the panel's direction must
+     * be keyed on the name, not a two-letter code. Core WHMCS ships 'arabic';
+     * the rest cover the common RTL locales a host may add.
+     */
+    private const RTL_LANGUAGES = [
+        'arabic', 'farsi', 'persian', 'hebrew', 'urdu', 'pashto',
+        'divehi', 'dhivehi', 'kurdish', 'sindhi', 'uyghur', 'yiddish',
+    ];
+
+    /**
+     * Text direction for the client-area panel: 'rtl' when the client's WHMCS
+     * language is a right-to-left locale, else 'ltr'. The template stamps this
+     * on the panel root and swaps its directional affordances (arrow glyphs,
+     * accent borders, numeric alignment) so an Arabic/Hebrew customer sees a
+     * correctly-mirrored panel instead of a left-to-right layout bleeding into
+     * WHMCS's RTL page.
+     */
+    public static function clientDir(array $params): string
+    {
+        $lang = self::resolveClientLangName($params);
+        return in_array($lang, self::RTL_LANGUAGES, true) ? 'rtl' : 'ltr';
     }
 
     /**

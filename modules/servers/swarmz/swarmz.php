@@ -1362,6 +1362,11 @@ function swarmz_ClientArea(array $params)
             // Translated strings — client's WHMCS language (en/de/fr/it/es),
             // English fallback per key.
             'L'                 => Helpers::clientLang($params),
+            // Text direction for the client's locale (rtl for Arabic/Hebrew/…)
+            // so the panel mirrors correctly inside WHMCS's RTL page instead of
+            // rendering left-to-right.
+            'dir'               => Helpers::clientDir($params),
+            'isRtl'             => Helpers::clientDir($params) === 'rtl',
         ],
     ];
 }
