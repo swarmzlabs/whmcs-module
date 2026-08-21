@@ -387,6 +387,24 @@ class Helpers
     }
 
     /**
+     * Minimum express-signup password length (Reseller Console → Prompt Box
+     * → "Express Min Password"). Defaults to 8 and is ALWAYS clamped to the
+     * 6..64 range — both against a host fat-fingering an unusable value
+     * (0, blank, negative, non-numeric) and, at the top, against a value no
+     * visitor could ever satisfy. The separate 256-char ceiling ExpressSignup
+     * enforces is a hard-coded safety cap, not console-configurable.
+     */
+    public static function expressMinPassword(): int
+    {
+        $raw = self::addonSetting('Express Min Password', 8);
+        $n = filter_var($raw, FILTER_VALIDATE_INT);
+        if ($n === false) {
+            $n = 8;
+        }
+        return max(6, min(64, (int) $n));
+    }
+
+    /**
      * The accent color for the client area, as a validated hex string ('' =
      * let the theme use its own default). Resolution order:
      *   1. Accent Color (a custom #hex the host typed) — always wins.

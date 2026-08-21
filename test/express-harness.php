@@ -39,6 +39,9 @@ namespace WHMCS\Database {
         /** @var array<string,bool> tables ensureSchema()/hasTable() knows about */
         public static $tables = [];
 
+        /** @var array<string,array<string,bool>> table => column names declared via schema()->create()/table() */
+        public static $columns = [];
+
         /** @var array<string,int> */
         private static $autoInc = [];
 
@@ -55,6 +58,7 @@ namespace WHMCS\Database {
         {
             self::$store = [];
             self::$tables = [];
+            self::$columns = [];
             self::$autoInc = [];
             self::$onUpdate = null;
         }
@@ -93,6 +97,58 @@ namespace WHMCS\Database {
             if (!isset(Capsule::$store[$name])) {
                 Capsule::$store[$name] = [];
             }
+            $this->runBlueprint($name, $callback);
+        }
+
+        /**
+         * Alter an existing table — exercises PromptBox::ensureSchema()'s
+         * additive, hasColumn-guarded ADD COLUMN path. Rows are plain assoc
+         * arrays in this fake, so there's nothing to physically alter; this
+         * only needs to make the new column name visible to hasColumn().
+         */
+        public function table(string $name, $callback): void
+        {
+            $this->runBlueprint($name, $callback);
+        }
+
+        /** True once a column has been declared via create() or table(). */
+        public function hasColumn(string $name, string $column): bool
+        {
+            return !empty(Capsule::$columns[$name][$column]);
+        }
+
+        private function runBlueprint(string $name, $callback): void
+        {
+            $bp = new FakeBlueprint();
+            if (is_callable($callback)) {
+                $callback($bp);
+            }
+            if (!isset(Capsule::$columns[$name])) {
+                Capsule::$columns[$name] = [];
+            }
+            Capsule::$columns[$name] = array_merge(Capsule::$columns[$name], $bp->columns);
+        }
+    }
+
+    /**
+     * Records the column names a create()/table() closure declares (e.g.
+     * $table->string('step', 40)->nullable()) so hasColumn() can answer
+     * accurately. Every column-defining call's first argument is the column
+     * name; modifier calls with no first argument (->nullable(), ->unique())
+     * or a non-string first argument (->index(['ip', 'created_at'])) are
+     * harmlessly ignored.
+     */
+    class FakeBlueprint
+    {
+        /** @var array<string,bool> */
+        public $columns = [];
+
+        public function __call($name, $args)
+        {
+            if (isset($args[0]) && is_string($args[0])) {
+                $this->columns[$args[0]] = true;
+            }
+            return $this;
         }
     }
 
@@ -413,6 +469,15 @@ namespace {
             ['module' => 'swarmz', 'setting' => 'API Key', 'value' => 'sk_live_test'],
             ['module' => 'swarmz', 'setting' => 'API Base URL', 'value' => 'https://api.example.invalid'],
         ];
+        // Absent unless a test opts in, so the default-reader path (no stored
+        // row at all) is what most cases exercise, same as a host who never
+        // touched this new v1.22.0 setting.
+        if (isset($settings['express_min_password'])) {
+            Capsule::$store['tbladdonmodules'][] = [
+                'module' => 'swarmz', 'setting' => 'Express Min Password',
+                'value'  => (string) $settings['express_min_password'],
+            ];
+        }
         Capsule::$store['tblproducts'] = [
             ['id' => PID_MONTHLY, 'servertype' => 'swarmz', 'paytype' => 'recurring'],
             ['id' => PID_FREE, 'servertype' => 'swarmz', 'paytype' => 'free'],
@@ -776,7 +841,232 @@ namespace {
     $check('cycle.suppressesOrderEmails', ($orderCall['noinvoiceemail'] ?? null) === true && ($orderCall['noemail'] ?? null) === true);
 
     // ===================================================================
-    // 10. The password never appears anywhere logModuleCall recorded, across
+    // 10. Provisioning fix — resolveServiceId's four fallback tiers.
+    // AddOrder's response shape varies across WHMCS 8.13.3 installs; each
+    // case below knocks out every tier ABOVE the one under test so a
+    // regression that silently falls back to the wrong tier still shows up
+    // as a wrong (or missing) bound service id.
+    // ===================================================================
+    echo "\n--- provisioning fix: resolveServiceId tier 2 (orderid + userid) ---\n";
+    seed();
+    seedTenant(850, 'tenant-tier2');
+    Capsule::$store['tblhosting'][] = ['id' => 850, 'orderid' => 910, 'userid' => 505, 'packageid' => PID_MONTHLY];
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 505],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 910], // no productids -> tier 1 misses
+        'AcceptOrder'       => ['result' => 'success'],
+    ]);
+    $result = ExpressSignup::run(baseInput(), $ctx);
+    $check('tier2.ok', ($result['ok'] ?? false) === true, var_export($result, true));
+    $check('tier2.acceptCalled', in_array('localApi:AcceptOrder', $rec->events, true), implode(',', $rec->events));
+    $bound850 = null;
+    foreach (Capsule::$store[PromptBox::TABLE] as $row) {
+        if (($row['service_id'] ?? null) === 850) {
+            $bound850 = $row;
+        }
+    }
+    $check('tier2.resolvedViaOrderIdAndUserId', $bound850 !== null);
+
+    echo "\n--- provisioning fix: resolveServiceId tier 3 (orderid only) ---\n";
+    seed();
+    seedTenant(860, 'tenant-tier3');
+    // userid deliberately does NOT match the new client -> tier 2 misses.
+    Capsule::$store['tblhosting'][] = ['id' => 860, 'orderid' => 911, 'userid' => 0, 'packageid' => PID_MONTHLY];
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 506],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 911],
+        'AcceptOrder'       => ['result' => 'success'],
+    ]);
+    $result = ExpressSignup::run(baseInput(), $ctx);
+    $check('tier3.ok', ($result['ok'] ?? false) === true, var_export($result, true));
+    $bound860 = null;
+    foreach (Capsule::$store[PromptBox::TABLE] as $row) {
+        if (($row['service_id'] ?? null) === 860) {
+            $bound860 = $row;
+        }
+    }
+    $check('tier3.resolvedViaOrderIdOnly', $bound860 !== null);
+
+    echo "\n--- provisioning fix: resolveServiceId tier 4 (userid + packageid) ---\n";
+    seed();
+    seedTenant(870, 'tenant-tier4');
+    // orderid deliberately matches NOTHING -> tiers 2 and 3 both miss.
+    Capsule::$store['tblhosting'][] = ['id' => 870, 'orderid' => 0, 'userid' => 507, 'packageid' => PID_MONTHLY];
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 507],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 912],
+        'AcceptOrder'       => ['result' => 'success'],
+    ]);
+    $result = ExpressSignup::run(baseInput(), $ctx);
+    $check('tier4.ok', ($result['ok'] ?? false) === true, var_export($result, true));
+    $bound870 = null;
+    foreach (Capsule::$store[PromptBox::TABLE] as $row) {
+        if (($row['service_id'] ?? null) === 870) {
+            $bound870 = $row;
+        }
+    }
+    $check('tier4.resolvedViaUserIdAndPackageId', $bound870 !== null);
+
+    echo "\n--- provisioning fix: all four tiers miss -> still ok:true, AcceptOrder still called ---\n";
+    seed();
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 508],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 913], // no productids; no tblhosting row anywhere
+        'AcceptOrder'       => ['result' => 'success'],
+    ]);
+    $result = ExpressSignup::run(baseInput(), $ctx);
+    $check('allmiss.ok', ($result['ok'] ?? false) === true, var_export($result, true));
+    $check('allmiss.acceptStillCalled', in_array('localApi:AcceptOrder', $rec->events, true), implode(',', $rec->events));
+    $check('allmiss.neverBound', !in_array('bind', $rec->events, true), implode(',', $rec->events));
+    $check('allmiss.fallsBackToServicesList',
+        ($result['redirect'] ?? '') === 'https://shop.example.invalid/clientarea.php?action=services',
+        (string) ($result['redirect'] ?? 'null'));
+
+    // ===================================================================
+    // 11. order_failed is reserved for a genuine AddOrder failure (already
+    // covered by "order failure" above) or a missing orderid — never for a
+    // downstream serviceId miss (covered by case 10 above). AcceptOrder must
+    // never be called without a real orderid.
+    // ===================================================================
+    echo "\n--- provisioning fix: AddOrder success but no orderid -> order_failed ---\n";
+    seed();
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 509],
+        'AddOrder'          => ['result' => 'success'], // no orderid key at all
+    ]);
+    $result = ExpressSignup::run(baseInput(), $ctx);
+    $check('noorderid.error', ($result['error'] ?? '') === 'order_failed', var_export($result, true));
+    $check('noorderid.neverAccepts', !in_array('localApi:AcceptOrder', $rec->events, true), implode(',', $rec->events));
+
+    // ===================================================================
+    // 12. Express Min Password — console setting, clamped 6..64, enforced
+    // as the signup's password floor.
+    // ===================================================================
+    echo "\n--- express min password: Helpers reader (default + clamp) ---\n";
+    seed();
+    $check('minpass.defaultIsEight', \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword() === 8,
+        (string) \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword());
+
+    seed(['express_min_password' => '3']);
+    $check('minpass.clampsLow', \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword() === 6,
+        (string) \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword());
+
+    seed(['express_min_password' => '999']);
+    $check('minpass.clampsHigh', \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword() === 64,
+        (string) \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword());
+
+    seed(['express_min_password' => 'not-a-number']);
+    $check('minpass.fallsBackOnNonNumeric', \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword() === 8,
+        (string) \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword());
+
+    echo "\n--- express min password: enforced end-to-end ---\n";
+    seed(['express_min_password' => '12']);
+    $result = ExpressSignup::run(baseInput(['password' => 'short11ch']), makeCtx(new Recorder(), []));
+    $check('minpass.enforced.belowFloorRejected', ($result['error'] ?? '') === 'weak_password', var_export($result, true));
+
+    seed(['express_min_password' => '12']);
+    seedTenant(881, 'tenant-minpass');
+    $ctx = makeCtx(new Recorder(), [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 510],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 920, 'productids' => '881'],
+        'AcceptOrder'       => ['result' => 'success'],
+    ]);
+    $result = ExpressSignup::run(baseInput(['password' => 'twelvecharsX']), $ctx); // exactly 12 chars
+    $check('minpass.enforced.atFloorAccepted', ($result['ok'] ?? false) === true, var_export($result, true));
+
+    // ===================================================================
+    // 13. Diagnostics — the attempt row recordExpressAttempt() writes up
+    // front gets its step/note attached at exit, the console's reader
+    // exposes them, and the additive schema upgrade actually adds the
+    // columns on an install that predates them.
+    // ===================================================================
+    echo "\n--- diagnostics: attempt-row step/note recorded ---\n";
+    seed();
+    $check('recordAttempt.returnsPositiveIncreasingIds',
+        ($idA = PromptBox::recordExpressAttempt('203.0.113.55')) > 0
+        && ($idB = PromptBox::recordExpressAttempt('203.0.113.55')) > $idA,
+        "idA=" . ($idA ?? 'null') . " idB=" . ($idB ?? 'null'));
+
+    seed();
+    seedTenant(890, 'tenant-diag-ok');
+    $ctx = makeCtx(new Recorder(), [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 511],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 930, 'productids' => '890'],
+        'AcceptOrder'       => ['result' => 'success'],
+    ]);
+    ExpressSignup::run(baseInput(['ip' => '203.0.113.90']), $ctx);
+    $diagOk = null;
+    foreach (Capsule::$store[PromptBox::ATTEMPTS_TABLE] as $row) {
+        if (($row['ip'] ?? '') === '203.0.113.90') {
+            $diagOk = $row;
+        }
+    }
+    $check('diag.rowExistsOnSuccess', $diagOk !== null);
+    $check('diag.stepIsOkSso', ($diagOk['step'] ?? '') === 'ok_sso', var_export($diagOk['step'] ?? null, true));
+    $check('diag.noteIsEmailPrefix', ($diagOk['note'] ?? '') === 'jane.doe+promo', var_export($diagOk['note'] ?? null, true));
+    $check('diag.noteNeverContainsPassword', strpos((string) ($diagOk['note'] ?? ''), 'correct-horse') === false);
+
+    ExpressSignup::run(baseInput(['ip' => '203.0.113.91', 'email' => 'other@example.com']), makeCtx(new Recorder(), [
+        'GetClientsDetails' => ['result' => 'success', 'id' => 55],
+    ]));
+    $diagFail = null;
+    foreach (Capsule::$store[PromptBox::ATTEMPTS_TABLE] as $row) {
+        if (($row['ip'] ?? '') === '203.0.113.91') {
+            $diagFail = $row;
+        }
+    }
+    $check('diag.rowExistsOnFailure', $diagFail !== null);
+    $check('diag.stepIsAccountExists', ($diagFail['step'] ?? '') === 'account_exists', var_export($diagFail['step'] ?? null, true));
+
+    $recentAttempts = PromptBox::recentExpressAttempts(20);
+    $exposesStep = false;
+    foreach ($recentAttempts as $r) {
+        if (($r->step ?? '') === 'account_exists') {
+            $exposesStep = true;
+        }
+    }
+    $check('diag.recentExpressAttemptsExposesStepAndNote', $exposesStep);
+
+    echo "\n--- diagnostics: additive schema upgrade adds step/note to an existing table ---\n";
+    Capsule::reset();
+    // Simulate a pre-v1.22.0 install: the attempts table already exists,
+    // with a real row, but WITHOUT the new columns.
+    Capsule::$tables[PromptBox::ATTEMPTS_TABLE] = true;
+    Capsule::$store[PromptBox::ATTEMPTS_TABLE] = [
+        ['id' => 1, 'ip' => '203.0.113.200', 'created_at' => '2026-01-01 00:00:00'],
+    ];
+    $check('upgrade.startsWithoutStepColumn', !Capsule::schema()->hasColumn(PromptBox::ATTEMPTS_TABLE, 'step'));
+    $check('upgrade.startsWithoutNoteColumn', !Capsule::schema()->hasColumn(PromptBox::ATTEMPTS_TABLE, 'note'));
+
+    PromptBox::ensureSchema();
+
+    $check('upgrade.addsStepColumn', Capsule::schema()->hasColumn(PromptBox::ATTEMPTS_TABLE, 'step'));
+    $check('upgrade.addsNoteColumn', Capsule::schema()->hasColumn(PromptBox::ATTEMPTS_TABLE, 'note'));
+    $check('upgrade.preservesExistingRow',
+        count(Capsule::$store[PromptBox::ATTEMPTS_TABLE]) === 1
+        && (Capsule::$store[PromptBox::ATTEMPTS_TABLE][0]['ip'] ?? '') === '203.0.113.200');
+
+    PromptBox::finishExpressAttempt(1, 'ok_sso', 'jane');
+    $check('upgrade.finishExpressAttemptWorksAfterUpgrade',
+        (Capsule::$store[PromptBox::ATTEMPTS_TABLE][0]['step'] ?? '') === 'ok_sso');
+
+    PromptBox::finishExpressAttempt(0, 'whatever', 'nothing'); // id<=0 must be a silent no-op, never throw
+    $check('finishExpressAttempt.noopOnNonPositiveId', true);
+
+    // ===================================================================
+    // 14. The password never appears anywhere logModuleCall recorded, across
     //     every case run above (all of which used the same test password).
     // ===================================================================
     echo "\n--- log redaction ---\n";
