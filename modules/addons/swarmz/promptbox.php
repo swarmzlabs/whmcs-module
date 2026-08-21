@@ -114,11 +114,18 @@ if ($action === 'express') {
 }
 
 // ---------------------------------------------------------------------------
-// a=js — the widget. Served with long-ish caching; all per-page options are
-// data-* attributes on the embedding <script> tag, so the JS itself is static.
+// a=js — the widget. Per-page options are data-* attributes on the embedding
+// <script> tag, but the response ALSO bakes in two console settings resolved
+// at request time (Frictionless onboarding on/off + Terms URL). Those must
+// take effect the moment a host flips the toggle, so this response is NOT
+// cacheable — a stale copy behind Cloudflare/LiteSpeed/the browser is exactly
+// what makes an enabled toggle appear to do nothing. The script is small and
+// dependency-free, so serving it fresh per load is cheap; correctness of the
+// signup mode beats caching a few KB.
 // ---------------------------------------------------------------------------
 header('Content-Type: application/javascript; charset=utf-8');
-header('Cache-Control: public, max-age=3600');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 
 $endpoint = rtrim(PromptBox::systemUrl(), '/') . '/modules/addons/swarmz/promptbox.php?a=intent';
 $endpointJson = json_encode($endpoint, JSON_UNESCAPED_SLASHES);

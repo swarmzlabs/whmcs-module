@@ -713,8 +713,8 @@ class Console
             $this->saveAddonSetting('Express Signup', $enabledIn);
             $this->saveAddonSetting('Express ToS URL', $tosUrlIn);
             $saved = $this->notice('success',
-                'Saved. The Prompt Box picks this up the next time its widget script is served '
-                . '&mdash; already-loaded pages can take up to an hour (the script is cached).'
+                'Saved. The Prompt Box widget reflects this immediately &mdash; visitors who '
+                . 'reload the page get the new behavior right away (the widget script is not cached).'
             );
         }
 
@@ -747,7 +747,7 @@ class Console
             . '<li>The product behind this widget is a Swarmz product with a <strong>Plan</strong> selected (Products/Services &rarr; Module Settings).</li>'
             . '<li>The $0 order this creates is auto-accepted, which <strong>bypasses fraud screening</strong> for that order.</li>'
             . '<li>A stricter per-IP rate limit applies than the plain Prompt Box.</li>'
-            . '<li>The widget script is cached for up to an hour, so this toggle can take that long to reach pages that already loaded it.</li>'
+            . '<li>Visitors already on the page keep the mode they loaded with until they reload &mdash; the toggle reaches new page loads immediately.</li>'
             . '</ul>'
         );
         $out .= '</div>';

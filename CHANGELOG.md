@@ -5,6 +5,16 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.21.1] - 2026-08-21
+
+### Fixed
+- **The Prompt Box widget now reflects the Frictionless onboarding toggle
+  immediately.** The widget script was served with an hour-long cache, so
+  turning the feature on (or off) could appear to do nothing until caches
+  expired — the visitor kept landing in the cart instead of the signup
+  overlay. The script that carries this setting is no longer cached, so a
+  page reload always picks up the current mode.
+
 ## [1.21.0] - 2026-08-21
 
 ### Added
