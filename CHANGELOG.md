@@ -5,6 +5,33 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.22.0] - 2026-08-21
+
+### Added
+- **Frictionless onboarding is now a sign-up popup, and fully customisable.**
+  Submitting a prompt opens a clean, accessible modal (email + password) over
+  the page instead of swapping the input in place. Customise it three ways:
+  per-field copy via `data-*` attributes; colours, radius and fonts via CSS
+  custom properties that inherit into the widget (`--spb-accent`, `--spb-bg`,
+  `--spb-modal-bg`, …) plus stable class hooks on every element; or go fully
+  headless (`data-express-mode="headless"`) and build your own sign-up UI,
+  driving it through `window.SwarmzPromptBox` (`submit()`, `on("prompt"|"result")`)
+  and the `swarmz:prompt` / `swarmz:express-result` DOM events.
+- **Minimum password length is configurable** (Reseller Console → Prompt Box),
+  enforced server-side and mirrored in the widget for instant feedback.
+- **"Recent express signups" diagnostics panel** in the console — each attempt's
+  time, email prefix, final step, and outcome, so a stuck signup can be
+  understood at a glance.
+
+### Fixed
+- **Express signups now provision reliably.** The order is always accepted after
+  it is placed, so a new signup no longer strands as a Pending order with no
+  workspace; the new service is resolved through several fallbacks for broad
+  WHMCS 8.x/9.x compatibility.
+- Hardened the sign-up input: a returning customer is cleanly guided to log in,
+  passwords are length-validated (floor and ceiling) and whitespace-only values
+  rejected, before anything reaches account creation.
+
 ## [1.21.1] - 2026-08-21
 
 ### Fixed

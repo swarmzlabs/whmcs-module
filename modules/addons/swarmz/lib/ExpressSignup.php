@@ -121,12 +121,18 @@ class ExpressSignup
         }
 
         $password = isset($input['password']) && is_string($input['password']) ? $input['password'] : '';
-        // Floor (WHMCS-side strength is bypassed by skipvalidation, so enforce
-        // our own) AND ceiling (never relay an unbounded blob into a live
-        // AddClient call — mirrors PROMPT_MAX_CHARS on the prompt). WHMCS 9.0
-        // itself caps new-user passwords at 100 chars; 256 is a safe headroom.
+        // Floor is a console setting (Helpers::expressMinPassword(), default
+        // 8, always clamped 6..64 — WHMCS-side strength is bypassed by
+        // skipvalidation, so this is the only floor that applies) AND a
+        // ceiling (never relay an unbounded blob into a live AddClient call —
+        // mirrors PROMPT_MAX_CHARS on the prompt). WHMCS 9.0 itself caps
+        // new-user passwords at 100 chars; 256 is a safe headroom and is NOT
+        // console-configurable. A password that is nothing but whitespace or
+        // control bytes can satisfy the length floor without being a real
+        // password, so that's rejected too.
+        $minPassword = \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword();
         $passLen = strlen($password);
-        if ($passLen < 8 || $passLen > 256) {
+        if ($passLen < $minPassword || $passLen > 256 || self::isUnusablePassword($password)) {
             return self::fail('weak_password');
         }
 
@@ -144,7 +150,11 @@ class ExpressSignup
         // signup, so counting those would let an attacker loop a known email
         // (which 409s before any intent is written) past the ceiling forever.
         // Record this attempt up front, before the duplicate-email API call it
-        // is meant to throttle.
+        // is meant to throttle. The returned row id is this request's
+        // diagnostics handle: every exit from here on attaches its outcome to
+        // it (finishAttempt()) so a host can see WHY a signup failed even
+        // though logModuleCall never fires from this public, unauthenticated
+        // endpoint.
         try {
             $recent = PromptBox::countExpressAttempts($ip, 3600);
         } catch (\Throwable $e) {
@@ -153,146 +163,210 @@ class ExpressSignup
         if ($recent >= PromptBox::EXPRESS_RATE_LIMIT_PER_HOUR) {
             return self::fail('rate_limited');
         }
-        PromptBox::recordExpressAttempt($ip);
+        $attemptId = PromptBox::recordExpressAttempt($ip);
 
-        // d. Duplicate email — we deliberately do NOT auto-login an existing
-        // account; the widget offers a "log in" link instead.
-        $dup = $ctx['localApi']('GetClientsDetails', ['email' => $email]);
-        if (is_array($dup) && ($dup['result'] ?? '') === 'success') {
-            return self::fail('account_exists');
-        }
-
-        // e. Create the WHMCS client from email + password alone. Both names
-        // are non-empty: skipvalidation waives most required fields but NOT
-        // firstname/lastname (WHMCS enforces those unconditionally), so an
-        // empty lastname would make AddClient fail. lastname carries a generic
-        // placeholder the customer can correct later at their first upgrade.
-        $addClientParams = [
-            'email'          => $email,
-            'password2'      => $password,
-            'firstname'      => self::deriveFirstName($email),
-            'lastname'       => 'Account',
-            'skipvalidation' => true,
-        ];
-        $addResp = $ctx['localApi']('AddClient', $addClientParams);
-        self::log('ExpressSignup.AddClient', $addClientParams, is_array($addResp) ? $addResp : []);
-        $clientId = (is_array($addResp) && ($addResp['result'] ?? '') === 'success')
-            ? (int) ($addResp['clientid'] ?? 0)
-            : 0;
-        if ($clientId <= 0) {
-            // WHMCS's real failure reason is in the log line above (redacted
-            // of the password); the browser gets a generic code only.
-            return self::fail('signup_failed');
-        }
-
-        // f. Create the prompt intent AFTER the client exists, so an
-        // abandoned validation failure never burns an intent row beyond the
-        // rate check above. Best-effort: a lost prompt must never block
-        // account creation — the customer still gets a working workspace,
-        // just not one already building their idea.
-        $token = null;
         try {
-            [$intentOk, $tokenOrError] = PromptBox::createIntent($prompt, $pid, $ip);
-            if ($intentOk) {
-                $token = $tokenOrError;
+            // d. Duplicate email — we deliberately do NOT auto-login an
+            // existing account; the widget offers a "log in" link instead.
+            $dup = $ctx['localApi']('GetClientsDetails', ['email' => $email]);
+            if (is_array($dup) && ($dup['result'] ?? '') === 'success') {
+                self::finishAttempt($attemptId, $email, 'account_exists');
+                return self::fail('account_exists');
             }
-        } catch (\Throwable $e) {
-            // fall through with $token === null
-        }
 
-        // g. Place the order. Free products complete with nothing to pay;
-        // everything else is billed monthly from the next cycle. AddOrder
-        // requires a real gateway even for a $0 order, and this endpoint has no
-        // existing service to inherit one from — so a store with no active
-        // gateway can't complete express signup. Fail clearly rather than let
-        // WHMCS reject the order with an opaque message.
-        $paymentMethod = self::resolvePaymentMethod();
-        if ($paymentMethod === '') {
-            self::log('ExpressSignup.NoGateway', ['clientid' => $clientId], ['note' => 'no active payment gateway configured']);
-            return self::fail('order_failed');
-        }
-        $cycle = self::resolveBillingCycle($pid);
-        $orderParams = [
-            'clientid'       => $clientId,
-            'paymentmethod'  => $paymentMethod,
-            'pid'            => [$pid],
-            'billingcycle'   => [$cycle],
-            'noinvoiceemail' => true,
-            'noemail'        => true,
-        ];
-        $orderResp = $ctx['localApi']('AddOrder', $orderParams);
-        self::log('ExpressSignup.AddOrder', $orderParams, is_array($orderResp) ? $orderResp : []);
-        if (!is_array($orderResp) || ($orderResp['result'] ?? '') !== 'success') {
-            return self::fail('order_failed');
-        }
-        $orderId = (int) ($orderResp['orderid'] ?? 0);
-
-        // h. Resolve the service id the order provisions.
-        $serviceId = self::resolveServiceId($orderResp, $orderId, $clientId);
-        if ($serviceId <= 0) {
-            return self::fail('order_failed');
-        }
-
-        // i. Bind the prompt BEFORE provisioning. No browser session exists
-        // for this journey, so the ClientAreaPage/AfterShoppingCartCheckout
-        // hooks never fire — this explicit bind is what makes CreateAccount's
-        // pendingPromptForService() lookup work.
-        if ($token !== null) {
-            try {
-                PromptBox::bindToService($token, $serviceId, $orderId);
-            } catch (\Throwable $e) {
-                // best-effort — see (f).
+            // e. Create the WHMCS client from email + password alone. Both
+            // names are non-empty: skipvalidation waives most required
+            // fields but NOT firstname/lastname (WHMCS enforces those
+            // unconditionally), so an empty lastname would make AddClient
+            // fail. lastname carries a generic placeholder the customer can
+            // correct later at their first upgrade.
+            $addClientParams = [
+                'email'          => $email,
+                'password2'      => $password,
+                'firstname'      => self::deriveFirstName($email),
+                'lastname'       => 'Account',
+                'skipvalidation' => true,
+            ];
+            $addResp = $ctx['localApi']('AddClient', $addClientParams);
+            self::log('ExpressSignup.AddClient', $addClientParams, is_array($addResp) ? $addResp : []);
+            $clientId = (is_array($addResp) && ($addResp['result'] ?? '') === 'success')
+                ? (int) ($addResp['clientid'] ?? 0)
+                : 0;
+            if ($clientId <= 0) {
+                // WHMCS's real failure reason is in the log line above
+                // (redacted of the password); the browser gets a generic
+                // code only.
+                self::finishAttempt($attemptId, $email, 'addclient_failed');
+                return self::fail('signup_failed');
             }
-        }
 
-        // j. Accept the order. autosetup forces module provisioning
-        // regardless of the product's own "on payment" configuration (a $0
-        // order never receives a payment event). A failure here doesn't stop
-        // us: the order and client already exist, so we still try for SSO /
-        // fall back to a working page rather than reporting failure.
-        $acceptParams = ['orderid' => $orderId, 'autosetup' => true, 'sendemail' => true];
-        $acceptResp = $ctx['localApi']('AcceptOrder', $acceptParams);
-        self::log('ExpressSignup.AcceptOrder', $acceptParams, is_array($acceptResp) ? $acceptResp : []);
-
-        // k. Verify provisioning actually produced a tenant, then mint SSO.
-        $tenantId = null;
-        if ($serverHelpersAvailable) {
+            // f. Create the prompt intent AFTER the client exists, so an
+            // abandoned validation failure never burns an intent row beyond
+            // the rate check above. Best-effort: a lost prompt must never
+            // block account creation — the customer still gets a working
+            // workspace, just not one already building their idea.
+            $token = null;
             try {
-                $tenantId = \WHMCS\Module\Server\Swarmz\Helpers::getTenantId($serviceId);
+                [$intentOk, $tokenOrError] = PromptBox::createIntent($prompt, $pid, $ip);
+                if ($intentOk) {
+                    $token = $tokenOrError;
+                }
             } catch (\Throwable $e) {
-                $tenantId = null;
+                // fall through with $token === null
             }
-        }
-        if ($tenantId !== null && $tenantId !== '') {
-            $externalRef = \WHMCS\Module\Server\Swarmz\Helpers::buildExternalRef($serviceId);
-            $redirect = null;
-            try {
-                $redirect = $ctx['sso']($externalRef);
-            } catch (\Throwable $e) {
+
+            // g. Place the order. Free products complete with nothing to
+            // pay; everything else is billed monthly from the next cycle.
+            // AddOrder requires a real gateway even for a $0 order, and this
+            // endpoint has no existing service to inherit one from — so a
+            // store with no active gateway can't complete express signup.
+            // Fail clearly rather than let WHMCS reject the order with an
+            // opaque message.
+            $paymentMethod = self::resolvePaymentMethod();
+            if ($paymentMethod === '') {
+                self::log('ExpressSignup.NoGateway', ['clientid' => $clientId], ['note' => 'no active payment gateway configured']);
+                self::finishAttempt($attemptId, $email, 'no_gateway');
+                return self::fail('order_failed');
+            }
+            $cycle = self::resolveBillingCycle($pid);
+            $orderParams = [
+                'clientid'       => $clientId,
+                'paymentmethod'  => $paymentMethod,
+                'pid'            => [$pid],
+                'billingcycle'   => [$cycle],
+                'noinvoiceemail' => true,
+                'noemail'        => true,
+            ];
+            $orderResp = $ctx['localApi']('AddOrder', $orderParams);
+            self::log('ExpressSignup.AddOrder', $orderParams, is_array($orderResp) ? $orderResp : []);
+            // order_failed is reserved for a genuine AddOrder failure (this
+            // check) or no usable orderid (the next one) — NEVER for a
+            // downstream serviceId-resolution miss. Once the order exists,
+            // AcceptOrder always runs (see (j)): a Pending order must never
+            // be the outcome of a "successful" express signup.
+            if (!is_array($orderResp) || ($orderResp['result'] ?? '') !== 'success') {
+                self::finishAttempt($attemptId, $email, 'addorder_failed');
+                return self::fail('order_failed');
+            }
+            $orderId = (int) ($orderResp['orderid'] ?? 0);
+            if ($orderId <= 0) {
+                self::finishAttempt($attemptId, $email, 'no_orderid');
+                return self::fail('order_failed');
+            }
+
+            // h. Resolve the service id the order provisions. AddOrder's
+            // response shape varies across WHMCS 8.13.3 installs, so this
+            // tries four fallback tiers (see resolveServiceId) before giving
+            // up. A miss here NEVER fails the signup — the order already
+            // exists, so we always go on to accept it (j); a miss only means
+            // the prompt can't be pre-bound, and we retry the resolve once
+            // more after acceptance, once tblhosting is guaranteed populated.
+            $serviceId = self::resolveServiceId($orderResp, $orderId, $clientId, $pid);
+
+            // i. Bind the prompt BEFORE provisioning, when we already know
+            // the service. No browser session exists for this journey, so
+            // the ClientAreaPage/AfterShoppingCartCheckout hooks never fire —
+            // this explicit bind is what makes CreateAccount's
+            // pendingPromptForService() lookup work. Nothing to bind yet if
+            // $serviceId is still 0 — the workspace still provisions, just
+            // without the prompt auto-starting.
+            if ($token !== null && $serviceId > 0) {
+                try {
+                    PromptBox::bindToService($token, $serviceId, $orderId);
+                } catch (\Throwable $e) {
+                    // best-effort — see (f).
+                }
+            }
+
+            // j. Accept the order. autosetup forces module provisioning
+            // regardless of the product's own "on payment" configuration (a
+            // $0 order never receives a payment event). This MUST run
+            // whenever AddOrder succeeded — it only needs the orderId, never
+            // the serviceId — so a signup never leaves a Pending order
+            // behind just because resolveServiceId came up empty. A failure
+            // here doesn't stop us either: the order and client already
+            // exist, so we still try for SSO / fall back to a working page
+            // rather than reporting failure.
+            $acceptParams = ['orderid' => $orderId, 'autosetup' => true, 'sendemail' => true];
+            $acceptResp = $ctx['localApi']('AcceptOrder', $acceptParams);
+            self::log('ExpressSignup.AcceptOrder', $acceptParams, is_array($acceptResp) ? $acceptResp : []);
+
+            // If we didn't have a serviceId before acceptance, tblhosting is
+            // now definitely populated — re-resolve so the tenant lookup and
+            // the fallback redirect below have a real service to point at.
+            // Binding the prompt at this point would be moot: CreateAccount
+            // already ran during AcceptOrder, so a bind now can no longer
+            // reach that run's pendingPromptForService() read.
+            if ($serviceId <= 0) {
+                $serviceId = self::resolveServiceId($orderResp, $orderId, $clientId, $pid);
+            }
+
+            // k. Verify provisioning actually produced a tenant, then mint SSO.
+            $tenantId = null;
+            if ($serviceId > 0) {
+                try {
+                    $tenantId = \WHMCS\Module\Server\Swarmz\Helpers::getTenantId($serviceId);
+                } catch (\Throwable $e) {
+                    $tenantId = null;
+                }
+            }
+            if ($tenantId !== null && $tenantId !== '') {
+                $externalRef = \WHMCS\Module\Server\Swarmz\Helpers::buildExternalRef($serviceId);
                 $redirect = null;
+                try {
+                    $redirect = $ctx['sso']($externalRef);
+                } catch (\Throwable $e) {
+                    $redirect = null;
+                }
+                if (is_string($redirect) && $redirect !== '') {
+                    self::finishAttempt($attemptId, $email, 'ok_sso');
+                    return ['ok' => true, 'redirect' => $redirect];
+                }
+                self::log('ExpressSignup.SsoFallback', ['serviceid' => $serviceId], ['note' => 'provisioned but sso mint failed']);
+            } else {
+                self::log('ExpressSignup.SsoFallback', ['serviceid' => $serviceId], ['note' => 'no tenant id yet after AcceptOrder']);
             }
-            if (is_string($redirect) && $redirect !== '') {
-                return ['ok' => true, 'redirect' => $redirect];
-            }
-            self::log('ExpressSignup.SsoFallback', ['serviceid' => $serviceId], ['note' => 'provisioned but sso mint failed']);
-        } else {
-            self::log('ExpressSignup.SsoFallback', ['serviceid' => $serviceId], ['note' => 'no tenant id yet after AcceptOrder']);
-        }
 
-        // l. Fallback: the customer is logged out, but WHMCS will ask them to
-        // log in with the credentials they just chose — still a working path.
-        // The order exists either way, so this is still ok:true.
-        $fallback = rtrim(PromptBox::systemUrl(), '/') . '/clientarea.php?action=productdetails&id=' . $serviceId;
-        return ['ok' => true, 'redirect' => $fallback];
+            // l. Fallback: the customer is logged out, but WHMCS will ask
+            // them to log in with the credentials they just chose — still a
+            // working path. The order exists either way, so this is still
+            // ok:true. NEVER return order_failed once the order exists: a
+            // serviceId miss (rare — all four resolveServiceId tiers missed
+            // twice) degrades to the client area's service list instead of a
+            // specific service link, still ok:true.
+            if ($serviceId > 0) {
+                self::finishAttempt($attemptId, $email, 'ok_fallback');
+                $fallback = rtrim(PromptBox::systemUrl(), '/') . '/clientarea.php?action=productdetails&id=' . $serviceId;
+                return ['ok' => true, 'redirect' => $fallback];
+            }
+            self::finishAttempt($attemptId, $email, 'ok_no_service');
+            return ['ok' => true, 'redirect' => rtrim(PromptBox::systemUrl(), '/') . '/clientarea.php?action=services'];
+        } catch (\Throwable $e) {
+            // A stray fault anywhere in d-l (e.g. a $ctx callable throwing)
+            // still deserves a diagnostic row before it propagates to run()'s
+            // own catch, which turns it into the generic signup_failed the
+            // browser sees.
+            self::finishAttempt($attemptId, $email, 'fatal');
+            throw $e;
+        }
     }
 
     /**
-     * Resolve the created service id: AddOrder's own 'productids' response
-     * first (comma list — a single-pid order has exactly one), falling back
-     * to the newest matching tblhosting row for installs/WHMCS versions that
-     * don't return it.
+     * Resolve the created service id, trying four fallback tiers in order —
+     * AddOrder's response shape varies across WHMCS 8.13.3 installs, so no
+     * single source is reliable on its own:
+     *   1. $orderResp['productids'] (comma list — a single-pid order has
+     *      exactly one) — no DB round-trip needed when present.
+     *   2. Newest tblhosting row for this exact orderid + userid.
+     *   3. Newest tblhosting row for this orderid alone (covers a shape
+     *      where tblhosting.userid isn't populated the instant AddOrder
+     *      returns).
+     *   4. Newest tblhosting row for this userid + packageid (last resort
+     *      for an install where tblhosting.orderid itself isn't populated).
+     * Returns 0 only when all four miss — the caller never treats that as a
+     * hard failure (see execute()).
      */
-    private static function resolveServiceId(array $orderResp, int $orderId, int $clientId): int
+    private static function resolveServiceId(array $orderResp, int $orderId, int $clientId, int $pid): int
     {
         if (!empty($orderResp['productids'])) {
             $ids = array_values(array_filter(array_map('intval', explode(',', (string) $orderResp['productids']))));
@@ -300,19 +374,94 @@ class ExpressSignup
                 return $ids[0];
             }
         }
-        if ($orderId <= 0) {
-            return 0;
+
+        if ($orderId > 0 && $clientId > 0) {
+            try {
+                $row = Capsule::table('tblhosting')
+                    ->where('orderid', $orderId)
+                    ->where('userid', $clientId)
+                    ->orderBy('id', 'desc')
+                    ->first(['id']);
+                if ($row) {
+                    return (int) $row->id;
+                }
+            } catch (\Throwable $e) {
+                // fall through to the next tier
+            }
         }
-        try {
-            $row = Capsule::table('tblhosting')
-                ->where('orderid', $orderId)
-                ->where('userid', $clientId)
-                ->orderBy('id', 'desc')
-                ->first(['id']);
-            return $row ? (int) $row->id : 0;
-        } catch (\Throwable $e) {
-            return 0;
+
+        if ($orderId > 0) {
+            try {
+                $row = Capsule::table('tblhosting')
+                    ->where('orderid', $orderId)
+                    ->orderBy('id', 'desc')
+                    ->first(['id']);
+                if ($row) {
+                    return (int) $row->id;
+                }
+            } catch (\Throwable $e) {
+                // fall through to the next tier
+            }
         }
+
+        if ($clientId > 0 && $pid > 0) {
+            try {
+                $row = Capsule::table('tblhosting')
+                    ->where('userid', $clientId)
+                    ->where('packageid', $pid)
+                    ->orderBy('id', 'desc')
+                    ->first(['id']);
+                if ($row) {
+                    return (int) $row->id;
+                }
+            } catch (\Throwable $e) {
+                // fall through
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * Attach this request's diagnostic outcome to the attempt row (c)
+     * created up front — see PromptBox::finishExpressAttempt(). $attemptId
+     * <= 0 (recordExpressAttempt() itself failed) is a no-op there, and the
+     * call is already best-effort/never-throws, so this is a thin,
+     * self-documenting wrapper naming the one piece of PII it's allowed to
+     * carry: an email PREFIX only, never the full address, and NEVER the
+     * password.
+     */
+    private static function finishAttempt(int $attemptId, string $email, string $step): void
+    {
+        PromptBox::finishExpressAttempt($attemptId, $step, self::emailPrefix($email));
+    }
+
+    /**
+     * A short, non-identifying fragment of the email for the diagnostics
+     * panel (mod_swarmz_express_attempts.note) — enough for a host to
+     * recognize which signup attempt is which without this table ever
+     * holding a full email address. Local part only (before '@'), truncated.
+     */
+    private static function emailPrefix(string $email): string
+    {
+        $at = strpos($email, '@');
+        $local = $at === false ? $email : substr($email, 0, $at);
+        return function_exists('mb_substr') ? mb_substr($local, 0, 24) : substr($local, 0, 24);
+    }
+
+    /**
+     * True when $password has no usable content: entirely whitespace, or
+     * entirely control characters (0x00-0x1F, 0x7F) once whitespace is set
+     * aside. A run of tabs or NUL bytes can satisfy the length floor without
+     * being a real password.
+     */
+    private static function isUnusablePassword(string $password): bool
+    {
+        if (trim($password) === '') {
+            return true;
+        }
+        $stripped = preg_replace('/[\x00-\x1F\x7F]/', '', $password);
+        return $stripped === null || trim($stripped) === '';
     }
 
     /** 'free' when the product's own paytype is free; 'monthly' otherwise. */
