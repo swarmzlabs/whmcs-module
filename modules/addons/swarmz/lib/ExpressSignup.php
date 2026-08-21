@@ -84,7 +84,13 @@ class ExpressSignup
         } catch (\Throwable $e) {
             // A stray fault anywhere below must never surface as a raw 500 to
             // an unauthenticated public endpoint.
-            self::log('ExpressSignup.Fatal', [], ['error' => $e->getMessage()]);
+            self::log('ExpressSignup.Fatal', [], [
+                'error' => $e->getMessage(),
+                // Names the code that actually threw — with third-party hooks
+                // running inside WHMCS API calls, this is how a host
+                // identifies the culprit module.
+                'thrown_at' => $e->getFile() . ':' . $e->getLine(),
+            ]);
             return self::fail('signup_failed');
         }
     }
@@ -193,9 +199,20 @@ class ExpressSignup
                 ? (int) ($addResp['clientid'] ?? 0)
                 : 0;
             if ($clientId <= 0) {
-                // WHMCS's real failure reason is in the log line above
-                // (redacted of the password); the browser gets a generic
-                // code only.
+                // WHMCS 8 splits CLIENTS from USERS: deleting a client leaves
+                // its user (and email) behind, so the GetClientsDetails
+                // pre-check above can miss and AddClient then refuses with
+                // "A user already exists with that email address". Surface
+                // that as the clean account_exists state (the widget's
+                // "welcome back — log in") instead of a generic failure.
+                $addMsg = is_array($addResp) ? strtolower((string) ($addResp['message'] ?? '')) : '';
+                if (strpos($addMsg, 'already exist') !== false || strpos($addMsg, 'already in use') !== false) {
+                    self::finishAttempt($attemptId, $email, 'account_exists');
+                    return self::fail('account_exists');
+                }
+                // Otherwise: WHMCS's real failure reason is in the log line
+                // above (redacted of the password); the browser gets a
+                // generic code only.
                 self::finishAttempt($attemptId, $email, 'addclient_failed');
                 return self::fail('signup_failed');
             }
@@ -239,19 +256,29 @@ class ExpressSignup
             ];
             $orderResp = $ctx['localApi']('AddOrder', $orderParams);
             self::log('ExpressSignup.AddOrder', $orderParams, is_array($orderResp) ? $orderResp : []);
+            $orderResp = is_array($orderResp) ? $orderResp : [];
             // order_failed is reserved for a genuine AddOrder failure (this
             // check) or no usable orderid (the next one) — NEVER for a
             // downstream serviceId-resolution miss. Once the order exists,
             // AcceptOrder always runs (see (j)): a Pending order must never
             // be the outcome of a "successful" express signup.
-            if (!is_array($orderResp) || ($orderResp['result'] ?? '') !== 'success') {
-                self::finishAttempt($attemptId, $email, 'addorder_failed');
-                return self::fail('order_failed');
-            }
-            $orderId = (int) ($orderResp['orderid'] ?? 0);
+            $orderId = (is_array($orderResp) && ($orderResp['result'] ?? '') === 'success')
+                ? (int) ($orderResp['orderid'] ?? 0)
+                : 0;
             if ($orderId <= 0) {
-                self::finishAttempt($attemptId, $email, 'no_orderid');
-                return self::fail('order_failed');
+                // AddOrder can die AFTER creating the order rows: order-time
+                // hooks and gateway modules run inside it, and a third-party
+                // throw there surfaces as an error/thrown return with the
+                // order already in tblorders (seen in the wild). Recover the
+                // just-placed order for THIS brand-new client instead of
+                // stranding it Pending.
+                $orderId = self::recoverJustPlacedOrder($clientId);
+                if ($orderId > 0) {
+                    self::log('ExpressSignup.AddOrderRecovered', ['clientid' => $clientId], ['orderid' => $orderId]);
+                } else {
+                    self::finishAttempt($attemptId, $email, 'addorder_failed');
+                    return self::fail('order_failed');
+                }
             }
 
             // h. Resolve the service id the order provisions. AddOrder's
@@ -346,7 +373,7 @@ class ExpressSignup
             // still deserves a diagnostic row before it propagates to run()'s
             // own catch, which turns it into the generic signup_failed the
             // browser sees.
-            self::finishAttempt($attemptId, $email, 'fatal');
+            self::finishAttempt($attemptId, $email, 'fatal', basename($e->getFile()) . ':' . $e->getLine());
             throw $e;
         }
     }
@@ -431,9 +458,13 @@ class ExpressSignup
      * carry: an email PREFIX only, never the full address, and NEVER the
      * password.
      */
-    private static function finishAttempt(int $attemptId, string $email, string $step): void
+    private static function finishAttempt(int $attemptId, string $email, string $step, string $extra = ''): void
     {
-        PromptBox::finishExpressAttempt($attemptId, $step, self::emailPrefix($email));
+        $note = self::emailPrefix($email);
+        if ($extra !== '') {
+            $note .= ' - ' . $extra;
+        }
+        PromptBox::finishExpressAttempt($attemptId, $step, $note);
     }
 
     /**
@@ -485,10 +516,50 @@ class ExpressSignup
     private static function resolvePaymentMethod(): string
     {
         try {
+            // Prefer an OFFLINE gateway when one is active: the express order
+            // is $0, and offline gateways (bank transfer / mail-in) run no
+            // third-party gateway code inside AddOrder/AcceptOrder — remote
+            // gateway modules and their hooks are exactly where hostile
+            // throws have been observed. Fall back to the first active
+            // gateway by display order, as before.
+            $offline = Capsule::table('tblpaymentgateways')
+                ->where('setting', 'name')
+                ->whereIn('gateway', ['banktransfer', 'mailin'])
+                ->orderBy('order')
+                ->first(['gateway']);
+            if ($offline) {
+                return (string) $offline->gateway;
+            }
             $gw = Capsule::table('tblpaymentgateways')->where('setting', 'name')->orderBy('order')->first(['gateway']);
             return $gw ? (string) $gw->gateway : '';
         } catch (\Throwable $e) {
             return '';
+        }
+    }
+
+    /**
+     * Newest order this (brand-new) client placed within the last few
+     * minutes. AddOrder runs third-party order/fraud/gateway hooks INSIDE
+     * itself; one of them throwing after the order rows exist leaves us with
+     * an error return AND a real order — recover it rather than stranding it
+     * Pending. Safe because the client id was created seconds ago by THIS
+     * request, so any order under it belongs to this signup.
+     */
+    private static function recoverJustPlacedOrder(int $clientId): int
+    {
+        if ($clientId <= 0) {
+            return 0;
+        }
+        try {
+            $since = date('Y-m-d H:i:s', time() - 180);
+            $row = Capsule::table('tblorders')
+                ->where('userid', $clientId)
+                ->where('date', '>=', $since)
+                ->orderBy('id', 'desc')
+                ->first(['id']);
+            return $row ? (int) $row->id : 0;
+        } catch (\Throwable $e) {
+            return 0;
         }
     }
 
@@ -554,7 +625,23 @@ class ExpressSignup
                 if (!function_exists('localAPI')) {
                     return ['result' => 'error', 'message' => 'localAPI unavailable'];
                 }
-                $result = localAPI($action, $params);
+                try {
+                    $result = localAPI($action, $params);
+                } catch (\Throwable $e) {
+                    // Production WHMCS installs run third-party hooks and
+                    // gateway modules INSIDE core API calls (AddOrder,
+                    // AcceptOrder run order/fraud/gateway hooks). One of them
+                    // throwing — seen in the wild: a legacy fsockopen+fwrite
+                    // gateway — must degrade to an error *return*, never
+                    // abort the whole signup as a fatal. thrown_at names the
+                    // culprit file so the host can identify the module.
+                    return [
+                        'result'    => 'error',
+                        'message'   => 'localAPI ' . $action . ' threw: ' . $e->getMessage(),
+                        'thrown'    => true,
+                        'thrown_at' => $e->getFile() . ':' . $e->getLine(),
+                    ];
+                }
                 return is_array($result) ? $result : ['result' => 'error', 'message' => 'unexpected localAPI response'];
             },
             'sso' => static function (string $externalRef): ?string {

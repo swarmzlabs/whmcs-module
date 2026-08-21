@@ -936,7 +936,7 @@ namespace {
     // downstream serviceId miss (covered by case 10 above). AcceptOrder must
     // never be called without a real orderid.
     // ===================================================================
-    echo "\n--- provisioning fix: AddOrder success but no orderid -> order_failed ---\n";
+    echo "\n--- provisioning fix: AddOrder success but no orderid, nothing to recover -> order_failed ---\n";
     seed();
     $rec = new Recorder();
     $ctx = makeCtx($rec, [
@@ -947,6 +947,88 @@ namespace {
     $result = ExpressSignup::run(baseInput(), $ctx);
     $check('noorderid.error', ($result['error'] ?? '') === 'order_failed', var_export($result, true));
     $check('noorderid.neverAccepts', !in_array('localApi:AcceptOrder', $rec->events, true), implode(',', $rec->events));
+
+    // ===================================================================
+    // 11b. Hostile-hook resilience: AddOrder dies AFTER creating the order
+    // (third-party hook/gateway throwing inside WHMCS's AddOrder — the
+    // localApi boundary converts the throw to an error return) — the
+    // just-placed order is RECOVERED from tblorders and still accepted.
+    // ===================================================================
+    echo "\n--- hostile hooks: AddOrder error but order exists -> recovered + accepted ---\n";
+    seed();
+    seedTenant(881, 'tenant-recovered-1');
+    Capsule::$store['tblorders'][] = ['id' => 7001, 'userid' => 510, 'date' => date('Y-m-d H:i:s'), 'status' => 'Pending'];
+    Capsule::$store['tblhosting'][] = ['id' => 881, 'orderid' => 7001, 'userid' => 510, 'packageid' => PID_MONTHLY];
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 510],
+        'AddOrder'          => ['result' => 'error', 'message' => 'localAPI AddOrder threw: fwrite(): Argument #1 ($stream) must be of type resource, bool given', 'thrown' => true],
+    ]);
+    $result = ExpressSignup::run(baseInput(['ip' => '203.0.113.91']), $ctx);
+    $check('recover.ok', !empty($result['ok']), var_export($result, true));
+    $check('recover.accepted', in_array('localApi:AcceptOrder', $rec->events, true), implode(',', $rec->events));
+    $acceptCall = null;
+    foreach ($rec->calls as $call) { if ($call['action'] === 'AcceptOrder') { $acceptCall = $call['params']; } }
+    $check('recover.acceptsRecoveredOrder', $acceptCall !== null && (int) ($acceptCall['orderid'] ?? 0) === 7001, var_export($acceptCall, true));
+
+    // ===================================================================
+    // 11c. WHMCS 8 client-vs-user split: AddClient refusing with "a user
+    // already exists" (client deleted, user left behind — GetClientsDetails
+    // misses it) maps to the clean account_exists 409, not signup_failed.
+    // ===================================================================
+    echo "\n--- late duplicate: AddClient 'user already exists' -> account_exists ---\n";
+    seed();
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'error', 'message' => 'A user already exists with that email address'],
+    ]);
+    $result = ExpressSignup::run(baseInput(['ip' => '203.0.113.92']), $ctx);
+    $check('lateDup.error', ($result['error'] ?? '') === 'account_exists', var_export($result, true));
+    $check('lateDup.noOrder', !in_array('localApi:AddOrder', $rec->events, true), implode(',', $rec->events));
+
+    // ===================================================================
+    // 11d. Offline gateway preferred for the $0 order — bank transfer /
+    // mail-in run no third-party gateway code inside AddOrder/AcceptOrder.
+    // ===================================================================
+    echo "\n--- gateway preference: offline gateway wins over display order ---\n";
+    seed();
+    Capsule::$store['tblpaymentgateways'] = [
+        ['gateway' => 'teststripe',   'setting' => 'name', 'value' => 'Card',          'order' => 1],
+        ['gateway' => 'banktransfer', 'setting' => 'name', 'value' => 'Bank Transfer', 'order' => 9],
+    ];
+    seedTenant(777, 'tenant-abc-123');
+    $rec = new Recorder();
+    $ctx = makeCtx($rec, [
+        'GetClientsDetails' => ['result' => 'error', 'message' => 'Client Not Found'],
+        'AddClient'         => ['result' => 'success', 'clientid' => 511],
+        'AddOrder'          => ['result' => 'success', 'orderid' => 7002, 'invoiceid' => 0, 'productids' => '777'],
+    ]);
+    ExpressSignup::run(baseInput(['ip' => '203.0.113.93']), $ctx);
+    $orderCall = null;
+    foreach ($rec->calls as $call) { if ($call['action'] === 'AddOrder') { $orderCall = $call['params']; } }
+    $check('gateway.prefersOffline', $orderCall !== null && ($orderCall['paymentmethod'] ?? '') === 'banktransfer', var_export($orderCall, true));
+
+    // ===================================================================
+    // 11e. defaultContext boundary: a global localAPI() that THROWS is
+    // converted to an error return — never a fatal, never an escaped
+    // exception from run().
+    // ===================================================================
+    echo "\n--- default localApi boundary: throwing localAPI() -> clean error return ---\n";
+    if (!function_exists('localAPI')) {
+        function localAPI($action, $params) { throw new \TypeError('fwrite(): Argument #1 ($stream) must be of type resource, bool given'); }
+    }
+    seed();
+    $threw = false;
+    $result = null;
+    try {
+        $result = ExpressSignup::run(baseInput(['ip' => '203.0.113.94'])); // no ctx -> defaultContext
+    } catch (\Throwable $e) {
+        $threw = true;
+    }
+    $check('boundary.noEscape', $threw === false);
+    $check('boundary.cleanError', ($result['error'] ?? '') === 'signup_failed', var_export($result, true));
 
     // ===================================================================
     // 12. Express Min Password — console setting, clamped 6..64, enforced
