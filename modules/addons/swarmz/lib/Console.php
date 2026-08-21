@@ -687,7 +687,55 @@ class Console
                 . '</tr></thead><tbody>' . $rows . '</tbody></table></div>';
         }
 
+        $out .= $this->renderExpressAttempts();
+
         return $out;
+    }
+
+    /**
+     * "Recent express signups" diagnostics panel — the last ~20 attempts at
+     * the frictionless flow above, each with the step ExpressSignup reached
+     * and its outcome. logModuleCall never fires from promptbox.php's
+     * public, unauthenticated context, so mod_swarmz_express_attempts (via
+     * the step/note ExpressSignup attaches at every exit) is the only place
+     * a host — or support — can see WHY a given signup failed. Shown
+     * regardless of whether Frictionless onboarding is currently on: a host
+     * who just switched it off after seeing abuse still needs to see the
+     * history that led them there.
+     */
+    private function renderExpressAttempts(): string
+    {
+        $out = '<h3 class="swz-section-title">Recent express signups</h3>';
+        $out .= '<p class="swz-lede">Every attempt at the frictionless signup above, newest first &mdash; '
+            . 'use this to see exactly where and why one didn&rsquo;t go through.</p>';
+
+        $rows = PromptBox::recentExpressAttempts(20);
+        if (empty($rows)) {
+            return $out . '<p class="swz-muted">None yet &mdash; attempts at the frictionless signup will show up here.</p>';
+        }
+
+        $body = '';
+        foreach ($rows as $r) {
+            $step = trim((string) ($r->step ?? ''));
+            if ($step === '') {
+                $outcome = '<span class="swz-badge swz-badge-neutral">In progress&hellip;</span>';
+            } elseif (strpos($step, 'ok') === 0) {
+                $outcome = '<span class="swz-badge swz-badge-ok">Success</span>';
+            } else {
+                $outcome = '<span class="swz-badge swz-badge-bad">Failed</span>';
+            }
+            $prefix = trim((string) ($r->note ?? ''));
+            $body .= '<tr>'
+                . '<td>' . $this->esc((string) $r->created_at) . '</td>'
+                . '<td>' . ($prefix !== '' ? $this->esc($prefix) . '&hellip;' : '<span class="swz-muted">&mdash;</span>') . '</td>'
+                . '<td>' . ($step !== '' ? '<code>' . $this->esc($step) . '</code>' : '<span class="swz-muted">&mdash;</span>') . '</td>'
+                . '<td>' . $outcome . '</td>'
+                . '</tr>';
+        }
+
+        return $out . '<div class="swz-tablewrap"><table class="swz-table"><thead><tr>'
+            . '<th>Time</th><th>Email</th><th>Final step</th><th>Outcome</th>'
+            . '</tr></thead><tbody>' . $body . '</tbody></table></div>';
     }
 
     /**
@@ -710,8 +758,17 @@ class Console
             $enabledIn = !empty($_POST['swz_express_enabled']) ? 'on' : 'off';
             $tosUrlIn = trim((string) ($_POST['swz_express_tos_url'] ?? ''));
             $tosUrlIn = preg_match('#^https?://#i', $tosUrlIn) ? $tosUrlIn : '';
+            // Same clamp Helpers::expressMinPassword() applies when reading
+            // it back, so a bad/blank/out-of-range value typed here can never
+            // produce an unusable (or unenforced) floor.
+            $minPassIn = filter_var($_POST['swz_express_min_password'] ?? 8, FILTER_VALIDATE_INT);
+            if ($minPassIn === false) {
+                $minPassIn = 8;
+            }
+            $minPassIn = max(6, min(64, (int) $minPassIn));
             $this->saveAddonSetting('Express Signup', $enabledIn);
             $this->saveAddonSetting('Express ToS URL', $tosUrlIn);
+            $this->saveAddonSetting('Express Min Password', (string) $minPassIn);
             $saved = $this->notice('success',
                 'Saved. The Prompt Box widget reflects this immediately &mdash; visitors who '
                 . 'reload the page get the new behavior right away (the widget script is not cached).'
@@ -720,6 +777,7 @@ class Console
 
         $enabled = \WHMCS\Module\Server\Swarmz\Helpers::expressSignupEnabled();
         $tosUrl = \WHMCS\Module\Server\Swarmz\Helpers::expressTosUrl();
+        $minPassword = \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword();
         $token = $this->adminFormToken();
 
         $out = '<div class="swz-section"><h3 class="swz-section-title">Frictionless onboarding</h3>';
@@ -739,6 +797,10 @@ class Console
             . '<input type="text" name="swz_express_tos_url" value="' . $this->esc($tosUrl) . '" placeholder="https://example.com/terms" '
             . 'style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;" /></label>'
             . '<p class="swz-muted" style="margin:6px 0 14px;">When set, the visitor must tick an &ldquo;I agree to the terms&rdquo; box before their account is created.</p>'
+            . '<label style="display:block;font-size:12px;color:#6b7280;max-width:180px;">Minimum password length<br>'
+            . '<input type="number" name="swz_express_min_password" value="' . (int) $minPassword . '" min="6" max="64" step="1" '
+            . 'style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;" /></label>'
+            . '<p class="swz-muted" style="margin:6px 0 14px;">Between 6 and 64 characters. Defaults to 8; WHMCS&rsquo;s own password strength meter is bypassed for this flow, so this is the only floor enforced.</p>'
             . '<button type="submit" class="swz-save">Save</button>'
             . '</form>';
         $out .= $this->notice('info',

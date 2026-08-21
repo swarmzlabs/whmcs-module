@@ -94,8 +94,28 @@ class PromptBox
                     $table->increments('id');
                     $table->string('ip', 45)->default('');
                     $table->dateTime('created_at');
+                    $table->string('step', 40)->nullable();
+                    $table->text('note')->nullable();
                     $table->index(['ip', 'created_at']);
                 });
+            } else {
+                // Additive upgrade path (v1.22.0): installs that already ran
+                // ensureSchema() on an earlier version have this table
+                // WITHOUT the two diagnostics columns below. Add each one
+                // individually, guarded by its own hasColumn(), so a
+                // partially-upgraded table (one column already present, e.g.
+                // from an interrupted request) is still handled correctly
+                // and nothing here ever touches existing rows.
+                if (!$schema->hasColumn(self::ATTEMPTS_TABLE, 'step')) {
+                    $schema->table(self::ATTEMPTS_TABLE, function ($table) {
+                        $table->string('step', 40)->nullable();
+                    });
+                }
+                if (!$schema->hasColumn(self::ATTEMPTS_TABLE, 'note')) {
+                    $schema->table(self::ATTEMPTS_TABLE, function ($table) {
+                        $table->text('note')->nullable();
+                    });
+                }
             }
         } catch (\Throwable $e) {
             // Schema plumbing is best-effort — a failure surfaces on first use.
@@ -107,17 +127,76 @@ class PromptBox
      * countExpressAttempts() throttles by requests reaching the endpoint rather
      * than by successful signups. Best-effort — a logging failure must never
      * block or fail the signup it is meant to rate-limit.
+     *
+     * Returns the inserted row id (0 on failure), so the caller can later
+     * attach this request's outcome via finishExpressAttempt(). That pairing
+     * is the only diagnostics this flow has: logModuleCall never fires from
+     * promptbox.php's public, unauthenticated context.
      */
-    public static function recordExpressAttempt(string $ip): void
+    public static function recordExpressAttempt(string $ip): int
     {
         try {
             self::ensureSchema();
-            Capsule::table(self::ATTEMPTS_TABLE)->insert([
+            return (int) Capsule::table(self::ATTEMPTS_TABLE)->insertGetId([
                 'ip'         => substr($ip, 0, 45),
                 'created_at' => date('Y-m-d H:i:s'),
             ]);
         } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Attach the flow's final step + a non-identifying note to an attempt
+     * row created by recordExpressAttempt(), so the Reseller Console's
+     * "Recent express signups" panel can show WHY a signup ended the way it
+     * did. Best-effort and never throws; $id <= 0 (recordExpressAttempt()
+     * itself failed, or the caller never recorded an attempt) is a silent
+     * no-op — there is no row to update.
+     *
+     * $note is written verbatim to mod_swarmz_express_attempts and rendered
+     * in the console: callers MUST NEVER pass the visitor's password here.
+     * An email prefix (never the full address) is fine.
+     */
+    public static function finishExpressAttempt(int $id, string $step, string $note = ''): void
+    {
+        if ($id <= 0) {
+            return;
+        }
+        try {
+            self::ensureSchema();
+            Capsule::table(self::ATTEMPTS_TABLE)->where('id', $id)->update([
+                'step' => substr($step, 0, 40),
+                'note' => substr($note, 0, 255),
+            ]);
+        } catch (\Throwable $e) {
             // best-effort
+        }
+    }
+
+    /**
+     * Latest express-signup attempts for the Reseller Console's "Recent
+     * express signups" diagnostics panel — mirrors recentIntents() below.
+     * Outcome-independent and capped the same way: newest first, capped at
+     * 100 regardless of what the caller asks for.
+     *
+     * @return array<int,\stdClass>
+     */
+    public static function recentExpressAttempts(int $limit = 20): array
+    {
+        try {
+            self::ensureSchema();
+            $rows = Capsule::table(self::ATTEMPTS_TABLE)
+                ->orderBy('id', 'desc')
+                ->limit(max(1, min(100, $limit)))
+                ->get(['id', 'created_at', 'step', 'note']);
+            $out = [];
+            foreach ($rows as $r) {
+                $out[] = $r;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
         }
     }
 
