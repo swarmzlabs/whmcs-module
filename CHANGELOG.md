@@ -25,9 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **Express signups now provision reliably.** The order is always accepted after
-  it is placed, so a new signup can no longer get stranded as a Pending order
-  with no workspace; the new service is resolved through several fallbacks for
-  broad WHMCS 8.x/9.x compatibility.
+  it is placed, so a new signup no longer strands as a Pending order with no
+  workspace; the new service is resolved through several fallbacks for broad
+  WHMCS 8.x/9.x compatibility.
 - Hardened the sign-up input: a returning customer is cleanly guided to log in,
   passwords are length-validated (floor and ceiling) and whitespace-only values
   rejected, before anything reaches account creation.

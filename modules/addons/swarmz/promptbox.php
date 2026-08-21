@@ -94,6 +94,12 @@ if ($action === 'express') {
         echo json_encode(['ok' => false, 'error' => 'method_not_allowed']);
         exit;
     }
+    // Give the AddClient → AddOrder → AcceptOrder → platform-sso chain room to
+    // finish in one request: a mid-chain max_execution_time cutoff is the one
+    // way a signup can still strand a Pending order (no shutdown hook runs).
+    // Best-effort — hosts that disable set_time_limit simply keep their default.
+    if (function_exists('set_time_limit')) { @set_time_limit(120); }
+
     $raw = file_get_contents('php://input');
     $body = json_decode(is_string($raw) ? $raw : '', true);
     if (!is_array($body)) {
@@ -310,7 +316,7 @@ echo <<<JS
       chip: dark ? "rgba(255,255,255,.06)" : "rgba(22,22,26,.05)",
       modalbg: dark ? "#17171c" : "#ffffff",
       overlay: "rgba(8,8,12,.62)",
-      shadow: dark ? ".55" : ".14"
+      shadow: dark ? ".45" : ".08"
     };
 
     var style = document.createElement("style");
@@ -471,6 +477,8 @@ echo <<<JS
 
       var title = document.createElement("h2");
       title.className = "spb-title"; title.textContent = cfg.expressTitle;
+      title.id = "spb-title-" + Math.round(Math.random() * 1e9).toString(36);
+      modal.setAttribute("aria-labelledby", title.id);
       modal.appendChild(title);
       var sub = document.createElement("p");
       sub.className = "spb-sub"; sub.textContent = cfg.expressSubtitle;
@@ -533,6 +541,14 @@ echo <<<JS
       modal.appendChild(foot);
 
       var lastFocus = null;
+      // Bumped on every close and every new submit. An in-flight express
+      // response captured its generation at send time and must NOT navigate
+      // (or mutate the modal) if the visitor has since dismissed it or started
+      // over — otherwise a slow signup response hijacks a page the visitor
+      // already moved on from, and "checkout instead" (which closes first)
+      // can't be raced by the express reply.
+      var gen = 0;
+      var removeTimer = null;
       function focusables() { return modal.querySelectorAll("button, input, a[href]"); }
       function trap(ev) {
         if (ev.key === "Escape") { ev.preventDefault(); closeModal(); return; }
@@ -565,9 +581,14 @@ echo <<<JS
       }
 
       closeModal = function () {
+        gen++; // invalidate any in-flight express response
         overlay.classList.remove("on");
         document.removeEventListener("keydown", trap, true);
-        setTimeout(function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 200);
+        if (removeTimer) { clearTimeout(removeTimer); }
+        removeTimer = setTimeout(function () {
+          removeTimer = null;
+          if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        }, 200);
         try { document.documentElement.style.overflow = ""; } catch (e) {}
         if (lastFocus && lastFocus.focus) { try { lastFocus.focus(); } catch (e) {} }
       };
@@ -581,9 +602,11 @@ echo <<<JS
         if (TOS_URL && (!tosCheckbox || !tosCheckbox.checked)) { mErrText("Please agree to the terms to continue."); return; }
         if (submitBtn.disabled) return;
         mErr.style.display = "none"; submitBtn.disabled = true; submitLabel.textContent = "Creating your account\\u2026";
+        var myGen = ++gen;
         emit("prompt", { prompt: field.value.trim(), pid: selectedPid });
         apiSubmit({ prompt: field.value.trim(), pid: selectedPid, email: email, password: password, tos: !!(tosCheckbox && tosCheckbox.checked) })
           .then(function (res) {
+            if (myGen !== gen) return; // dismissed / superseded while in flight — don't hijack
             if (res.ok && res.redirect) { window.location.href = res.redirect; return; }
             if (res.error === "account_exists") loginState(email);
             else if (res.error === "rate_limited") mErrText("Too many attempts right now \\u2014 please try again in a few minutes.");
@@ -603,18 +626,27 @@ echo <<<JS
       checkoutLink.addEventListener("click", function (ev) { ev.preventDefault(); closeModal(); submitClassic(); });
 
       openModal = function (promptText) {
+        gen++; // a fresh open supersedes any dismissed in-flight response
+        if (removeTimer) { clearTimeout(removeTimer); removeTimer = null; } // cancel a pending detach so a quick close→reopen can't strip the reopened modal
         var ctxPrompt = (promptText || "").trim();
         context.textContent = "";
         var lab = document.createElement("b"); lab.textContent = "Building: ";
         context.appendChild(lab);
         context.appendChild(document.createTextNode(ctxPrompt || "your app"));
         lastFocus = root.activeElement;
-        root.appendChild(overlay);
+        if (!overlay.parentNode) root.appendChild(overlay);
         try { document.documentElement.style.overflow = "hidden"; } catch (e) {}
+        document.removeEventListener("keydown", trap, true); // never stack duplicate traps
         document.addEventListener("keydown", trap, true);
         requestAnimationFrame(function () { overlay.classList.add("on"); emailField.focus(); });
       };
-      window.SwarmzPromptBox.open = openModal;
+      // First non-headless widget on the page owns the programmatic .open(),
+      // matching the first-wins singleton for .submit()/.on(). A page with
+      // several widgets should drive extras via their own DOM, not this API.
+      if (typeof window.SwarmzPromptBox.open !== "function" || !window.SwarmzPromptBox._hasModal) {
+        window.SwarmzPromptBox.open = openModal;
+        window.SwarmzPromptBox._hasModal = true;
+      }
     }
 
     function onGoClick() {
