@@ -5,6 +5,24 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.22.1] - 2026-08-21
+
+### Fixed
+- **Express signups now survive third-party modules misbehaving during order
+  processing.** WHMCS runs other modules' hooks and gateway code inside
+  `AddOrder`/`AcceptOrder`; one of them crashing could abort the signup after
+  the order was already created, leaving it Pending with no workspace. The
+  module now contains those failures, recovers the just-placed order, and
+  carries on to activation. The diagnostics panel and module log now name the
+  file that crashed, so a misbehaving third-party module is identifiable at a
+  glance.
+- **Deleted-client emails sign in cleanly.** WHMCS keeps the underlying user
+  when a client is deleted; signing up again with that email now shows the
+  "welcome back — log in" step instead of a generic error.
+- The $0 express order now prefers an offline payment gateway (bank transfer /
+  mail-in) when one is active — no third-party gateway code runs at all during
+  signup on such stores.
+
 ## [1.22.0] - 2026-08-21
 
 ### Added
