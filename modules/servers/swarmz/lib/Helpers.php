@@ -361,6 +361,32 @@ class Helpers
     }
 
     /**
+     * Whether the storefront Prompt Box offers "Frictionless onboarding" — the
+     * email+password express-signup overlay (Reseller Console → Prompt Box).
+     * DEFAULT OFF: a host must opt in before promptbox.php's a=express
+     * endpoint will place a single $0 order without any human review. Mirrors
+     * addonBool()'s tolerant on/off reading (same as every other console
+     * yes/no setting), so an absent or garbled stored value can never be
+     * misread as "on".
+     */
+    public static function expressSignupEnabled(): bool
+    {
+        return self::addonBool('Express Signup', false);
+    }
+
+    /**
+     * Optional Terms of Service URL shown (and required, via a checkbox) on
+     * the express-signup step. '' when unset or when the stored value isn't a
+     * usable http(s) URL — never a source of an unexpected redirect or markup
+     * injection from a hand-edited setting.
+     */
+    public static function expressTosUrl(): string
+    {
+        $v = trim((string) self::addonSetting('Express ToS URL', ''));
+        return preg_match('#^https?://#i', $v) ? $v : '';
+    }
+
+    /**
      * The accent color for the client area, as a validated hex string ('' =
      * let the theme use its own default). Resolution order:
      *   1. Accent Color (a custom #hex the host typed) — always wins.

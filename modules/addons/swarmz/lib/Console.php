@@ -546,6 +546,8 @@ class Console
             . 'in your WHMCS cart &mdash; the prompt rides along automatically. When the order provisions, their workspace '
             . 'opens on their very first login with that app <strong>already building</strong>.</p>';
 
+        $out .= $this->renderExpressSignupCard();
+
         $products = PromptBox::swarmzProducts();
         $visible = array_values(array_filter($products, function ($p) {
             return empty($p['hidden']);
@@ -684,6 +686,71 @@ class Console
                 . '<th>Captured</th><th>Product</th><th>Prompt</th><th>Status</th><th>Service</th>'
                 . '</tr></thead><tbody>' . $rows . '</tbody></table></div>';
         }
+
+        return $out;
+    }
+
+    /**
+     * "Frictionless onboarding" opt-in card — email+password signup for the
+     * Prompt Box (promptbox.php?a=express), rendered above the snippet
+     * builder. Off by default; the endpoint itself re-checks
+     * Helpers::expressSignupEnabled() server-side, so this form is a
+     * convenience, never the only gate. Only reached once render() has
+     * already confirmed the provisioning (server) module is present, so the
+     * Helpers:: calls below are safe unconditionally (same assumption every
+     * other method on this page already makes).
+     */
+    private function renderExpressSignupCard(): string
+    {
+        $saved = '';
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_express_save'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $enabledIn = !empty($_POST['swz_express_enabled']) ? 'on' : 'off';
+            $tosUrlIn = trim((string) ($_POST['swz_express_tos_url'] ?? ''));
+            $tosUrlIn = preg_match('#^https?://#i', $tosUrlIn) ? $tosUrlIn : '';
+            $this->saveAddonSetting('Express Signup', $enabledIn);
+            $this->saveAddonSetting('Express ToS URL', $tosUrlIn);
+            $saved = $this->notice('success',
+                'Saved. The Prompt Box picks this up the next time its widget script is served '
+                . '&mdash; already-loaded pages can take up to an hour (the script is cached).'
+            );
+        }
+
+        $enabled = \WHMCS\Module\Server\Swarmz\Helpers::expressSignupEnabled();
+        $tosUrl = \WHMCS\Module\Server\Swarmz\Helpers::expressTosUrl();
+        $token = $this->adminFormToken();
+
+        $out = '<div class="swz-section"><h3 class="swz-section-title">Frictionless onboarding</h3>';
+        $out .= '<p class="swz-section-sub">A swarmz.net-style signup for this Prompt Box: the visitor submits their '
+            . 'prompt, then just an email and a password &mdash; no address, no billing &mdash; and lands straight in '
+            . 'the builder with their app already building. The WHMCS client account is created behind the scenes; '
+            . 'address and billing are collected the normal way, at their first paid order.</p>';
+        $out .= $saved;
+        $out .= '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">'
+            . $token
+            . '<input type="hidden" name="swz_express_save" value="1" />'
+            . '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;margin-bottom:12px;">'
+            . '<input type="checkbox" name="swz_express_enabled" value="1" style="margin-top:2px;"' . ($enabled ? ' checked' : '') . ' />'
+            . '<span><strong>Turn on frictionless onboarding.</strong> Off by default.</span>'
+            . '</label>'
+            . '<label style="display:block;font-size:12px;color:#6b7280;max-width:420px;">Terms of Service URL (optional)<br>'
+            . '<input type="text" name="swz_express_tos_url" value="' . $this->esc($tosUrl) . '" placeholder="https://example.com/terms" '
+            . 'style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;" /></label>'
+            . '<p class="swz-muted" style="margin:6px 0 14px;">When set, the visitor must tick an &ldquo;I agree to the terms&rdquo; box before their account is created.</p>'
+            . '<button type="submit" class="swz-save">Save</button>'
+            . '</form>';
+        $out .= $this->notice('info',
+            '<strong>What to check before turning this on:</strong>'
+            . '<ul style="margin:8px 0 0;padding-left:18px;">'
+            . '<li>The product behind this widget is a Swarmz product with a <strong>Plan</strong> selected (Products/Services &rarr; Module Settings).</li>'
+            . '<li>The $0 order this creates is auto-accepted, which <strong>bypasses fraud screening</strong> for that order.</li>'
+            . '<li>A stricter per-IP rate limit applies than the plain Prompt Box.</li>'
+            . '<li>The widget script is cached for up to an hour, so this toggle can take that long to reach pages that already loaded it.</li>'
+            . '</ul>'
+        );
+        $out .= '</div>';
 
         return $out;
     }
