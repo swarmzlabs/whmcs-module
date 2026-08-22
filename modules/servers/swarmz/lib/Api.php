@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.24.0';
+    const VERSION = '1.25.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -140,7 +140,7 @@ class Api
         }
         // v1.23.0: report this install's SystemURL so the platform can deep-link
         // customers back into this WHMCS for upgrades (see upgrade.php).
-        return $this->postPlatform('platform-plan-refresh', self::withPortal($body));
+        return $this->postPlatform('platform-plan-refresh', self::withPortal($body, true));
     }
 
     /**
@@ -180,13 +180,26 @@ class Api
      * without configuring anything and without waiting for a new order.
      * No-op when SystemURL is unset/non-https or the body already carries one.
      *
+     * With $withCatalog (v1.25.0) the descriptor also carries what this WHMCS
+     * actually sells of the Swarmz catalogue (Helpers::whmcsPlanCatalog) so
+     * the platform hides unsellable plans from the customer's plan picker.
+     * Routine, non-hot calls only — daily usage read, plan lists, provisioning,
+     * plan refresh; SSO mints and Test Connection stay URL-only.
+     *
      * @param array $body
+     * @param bool  $withCatalog Attach the sellable-plans catalog.
      * @return array
      */
-    public static function withPortal(array $body): array
+    public static function withPortal(array $body, bool $withCatalog = false): array
     {
         $portal = self::billingPortal();
         if ($portal !== null && !isset($body['billing_portal'])) {
+            if ($withCatalog && class_exists(Helpers::class, false)) {
+                $catalog = Helpers::whmcsPlanCatalog();
+                if ($catalog !== null) {
+                    $portal['catalog'] = $catalog;
+                }
+            }
             $body['billing_portal'] = $portal;
         }
         return $body;
@@ -257,7 +270,7 @@ class Api
         }
         // Carries the billing portal (v1.24.0) — plan lists are the module's
         // most frequent key-authed call (console, product config, daily cron).
-        $result = $this->postPlatform('platform-plans', self::withPortal([]));
+        $result = $this->postPlatform('platform-plans', self::withPortal([], true));
         $body = $result['body'];
         $plans = (isset($body['plans']) && is_array($body['plans'])) ? array_values($body['plans']) : [];
         $this->plansCache = $plans;
