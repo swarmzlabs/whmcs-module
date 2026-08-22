@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.23.0';
+    const VERSION = '1.24.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -140,11 +140,7 @@ class Api
         }
         // v1.23.0: report this install's SystemURL so the platform can deep-link
         // customers back into this WHMCS for upgrades (see upgrade.php).
-        $portal = self::billingPortal();
-        if ($portal !== null) {
-            $body['billing_portal'] = $portal;
-        }
-        return $this->postPlatform('platform-plan-refresh', $body);
+        return $this->postPlatform('platform-plan-refresh', self::withPortal($body));
     }
 
     /**
@@ -176,6 +172,44 @@ class Api
     }
 
     /**
+     * Attach this install's billing-portal descriptor to a request body
+     * (v1.24.0). Every routine platform call the module makes — the daily
+     * usage read, plan lists, customer/admin SSO mints, Test Connection,
+     * provisioning, plan refresh — rides the portal along, so a host registers
+     * (and keeps current) the WHMCS URL behind the editor's upgrade deep links
+     * without configuring anything and without waiting for a new order.
+     * No-op when SystemURL is unset/non-https or the body already carries one.
+     *
+     * @param array $body
+     * @return array
+     */
+    public static function withPortal(array $body): array
+    {
+        $portal = self::billingPortal();
+        if ($portal !== null && !isset($body['billing_portal'])) {
+            $body['billing_portal'] = $portal;
+        }
+        return $body;
+    }
+
+    /**
+     * Register this install's billing portal with the platform right now
+     * (v1.24.0). Used on addon activation/upgrade so the upgrade deep links
+     * light up the moment a host updates, instead of after the next cron or
+     * customer login. Rides on platform-plans (key-authed, cheap, idempotent).
+     *
+     * @return bool True when a portal descriptor was sent.
+     */
+    public function registerBillingPortal(): bool
+    {
+        if (self::billingPortal() === null) {
+            return false;
+        }
+        $this->listPlans(true);
+        return true;
+    }
+
+    /**
      * Exchange a one-time upgrade intent (minted by the platform for a signed-in
      * customer and carried through the browser to this install's upgrade.php)
      * for the customer's service reference. Maps to
@@ -185,12 +219,7 @@ class Api
      */
     public function verifyUpgradeIntent(string $intent): array
     {
-        $body = ['intent' => $intent];
-        $portal = self::billingPortal();
-        if ($portal !== null) {
-            $body['billing_portal'] = $portal;
-        }
-        return $this->postPlatform('platform-upgrade-intent', $body);
+        return $this->postPlatform('platform-upgrade-intent', self::withPortal(['intent' => $intent]));
     }
 
     /**
@@ -226,7 +255,9 @@ class Api
         if (!$forceRefresh && $this->plansCache !== null) {
             return $this->plansCache;
         }
-        $result = $this->postPlatform('platform-plans', []);
+        // Carries the billing portal (v1.24.0) — plan lists are the module's
+        // most frequent key-authed call (console, product config, daily cron).
+        $result = $this->postPlatform('platform-plans', self::withPortal([]));
         $body = $result['body'];
         $plans = (isset($body['plans']) && is_array($body['plans'])) ? array_values($body['plans']) : [];
         $this->plansCache = $plans;

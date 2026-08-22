@@ -259,10 +259,7 @@ function swarmz_CreateAccount(array $params)
         // v1.23.0: tell the platform where this WHMCS lives so it can deep-link
         // the customer back here for upgrades (upgrade.php). Omitted when
         // SystemURL is unset/non-https; the platform then uses its fallbacks.
-        $portal = Api::billingPortal();
-        if ($portal !== null) {
-            $body['billing_portal'] = $portal;
-        }
+        $body = Api::withPortal($body);
 
         // Prompt-box intent (v1.9.0): a prompt the customer typed on the
         // host's storefront, bound to this service by the addon's checkout
@@ -1417,7 +1414,9 @@ function swarmz_TestConnection(array $params)
         // Use a zero UUID — a syntactically-valid tenant_id that cannot
         // exist in the wild. The endpoint resolves it through workspaces.id
         // (UUID column), so this short-circuits to "not found".
-        $body = ['tenant_id' => '00000000-0000-0000-0000-000000000000'];
+        // withPortal (v1.24.0): a successful Test Connection also registers
+        // this install's billing portal, so upgrade deep links work from setup.
+        $body = Api::withPortal(['tenant_id' => '00000000-0000-0000-0000-000000000000']);
         try {
             $result = $api->postPlatform('platform-sso', $body);
             _swarmz_logModuleCall(
@@ -1556,7 +1555,7 @@ function _swarmz_doSso(array $params): array
             $body['tenant_id'] = $tenantId;
         }
 
-        $result = $api->postPlatform('platform-sso', $body);
+        $result = $api->postPlatform('platform-sso', Api::withPortal($body));
         $resp = $result['body'];
 
         _swarmz_logModuleCall('SSO', $body, $resp, $api->maskedKey());

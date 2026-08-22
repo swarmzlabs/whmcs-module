@@ -179,7 +179,9 @@ function _swarmz_cron_reconcile(): void
     // ── 1. Usage refresh: ONE account-wide call, map by workspace_id. ──────
     $usageMap = [];
     try {
-        $res = $api->postPlatform('platform-usage', ['period' => 'current_month']);
+        // withPortal (v1.24.0): the daily usage read also registers this
+        // install's billing portal — every host self-registers within a day.
+        $res = $api->postPlatform('platform-usage', Api::withPortal(['period' => 'current_month']));
         $usage = (isset($res['body']['usage']) && is_array($res['body']['usage'])) ? $res['body']['usage'] : [];
         $byWs = (isset($usage['by_workspace']) && is_array($usage['by_workspace'])) ? $usage['by_workspace'] : [];
         foreach ($byWs as $w) {

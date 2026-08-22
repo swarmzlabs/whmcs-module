@@ -658,7 +658,7 @@ class ExpressSignup
                     $baseUrl = trim((string) \WHMCS\Module\Server\Swarmz\Helpers::addonSetting('API Base URL', ''));
                     $baseUrl = $baseUrl !== '' ? rtrim($baseUrl, '/') : \WHMCS\Module\Server\Swarmz\Helpers::DEFAULT_API_BASE_URL;
                     $api = new \WHMCS\Module\Server\Swarmz\Api($apiKey, $baseUrl);
-                    $result = $api->postPlatform('platform-sso', ['external_ref' => $externalRef]);
+                    $result = $api->postPlatform('platform-sso', \WHMCS\Module\Server\Swarmz\Api::withPortal(['external_ref' => $externalRef]));
                     $redirect = $result['body']['redirectTo'] ?? null;
                     return (is_string($redirect) && $redirect !== '') ? $redirect : null;
                 } catch (\Throwable $e) {
