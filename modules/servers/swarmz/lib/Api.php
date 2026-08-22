@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.20.2';
+    const VERSION = '1.21.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -138,7 +138,59 @@ class Api
         } else {
             $body['external_ref'] = $refOrId;
         }
+        // v1.21.0: report this install's SystemURL so the platform can deep-link
+        // customers back into this WHMCS for upgrades (see upgrade.php).
+        $portal = self::billingPortal();
+        if ($portal !== null) {
+            $body['billing_portal'] = $portal;
+        }
         return $this->postPlatform('platform-plan-refresh', $body);
+    }
+
+    /**
+     * This install's billing-portal descriptor, sent alongside provisioning and
+     * plan-refresh calls so the platform can form upgrade deep links into this
+     * WHMCS without any host configuration: `{kind:'whmcs', url:<SystemURL>}`.
+     * Null when SystemURL is unset or not https (the platform ignores those).
+     *
+     * @return array{kind:string,url:string}|null
+     */
+    public static function billingPortal(): ?array
+    {
+        $base = '';
+        try {
+            if (class_exists('\\WHMCS\\Config\\Setting')) {
+                $base = trim((string) \WHMCS\Config\Setting::getValue('SystemURL'));
+            }
+        } catch (\Throwable $e) {
+            $base = '';
+        }
+        if ($base === '' && isset($GLOBALS['CONFIG']['SystemURL'])) {
+            $base = trim((string) $GLOBALS['CONFIG']['SystemURL']);
+        }
+        $base = rtrim($base, '/');
+        if ($base === '' || stripos($base, 'https://') !== 0) {
+            return null;
+        }
+        return ['kind' => 'whmcs', 'url' => $base];
+    }
+
+    /**
+     * Exchange a one-time upgrade intent (minted by the platform for a signed-in
+     * customer and carried through the browser to this install's upgrade.php)
+     * for the customer's service reference. Maps to
+     * POST /functions/v1/platform-upgrade-intent.
+     *
+     * @return array{statusCode:int, body:array}
+     */
+    public function verifyUpgradeIntent(string $intent): array
+    {
+        $body = ['intent' => $intent];
+        $portal = self::billingPortal();
+        if ($portal !== null) {
+            $body['billing_portal'] = $portal;
+        }
+        return $this->postPlatform('platform-upgrade-intent', $body);
     }
 
     /**
