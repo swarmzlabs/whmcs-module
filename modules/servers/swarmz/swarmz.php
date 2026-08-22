@@ -256,7 +256,7 @@ function swarmz_CreateAccount(array $params)
             'whu'          => $whu,
             'plan_code'    => $planCode,
         ];
-        // v1.21.0: tell the platform where this WHMCS lives so it can deep-link
+        // v1.23.0: tell the platform where this WHMCS lives so it can deep-link
         // the customer back here for upgrades (upgrade.php). Omitted when
         // SystemURL is unset/non-https; the platform then uses its fallbacks.
         $portal = Api::billingPortal();

@@ -5,13 +5,13 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.21.0] - 2026-08-21
+## [1.23.0] - 2026-08-22
 
 ### Added
 - **Upgrade deep links from the Swarmz editor into this WHMCS.** When a
   customer opens the plan picker inside their white-label editor and picks a
-  plan, the platform can now send them straight to this install's
-  upgrade page for their service — already signed in. New public endpoint
+  plan, the platform can now send them straight to this install's upgrade
+  page for their service — already signed in. New public endpoint
   `modules/addons/swarmz/upgrade.php?intent=…`: it exchanges the one-time
   intent with the platform (`platform-upgrade-intent`, Bearer API key), looks
   up the service, and mints a WHMCS `CreateSsoToken` (WHMCS 7.10+) onto
@@ -28,6 +28,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Notes
 - No schema changes; no settings changed. Update is a plain overlay.
+
+## [1.22.1] - 2026-08-21
+
+### Fixed
+- **Express signups now survive third-party modules misbehaving during order
+  processing.** WHMCS runs other modules' hooks and gateway code inside
+  `AddOrder`/`AcceptOrder`; one of them crashing could abort the signup after
+  the order was already created, leaving it Pending with no workspace. The
+  module now contains those failures, recovers the just-placed order, and
+  carries on to activation. The diagnostics panel and module log now name the
+  file that crashed, so a misbehaving third-party module is identifiable at a
+  glance.
+- **Deleted-client emails sign in cleanly.** WHMCS keeps the underlying user
+  when a client is deleted; signing up again with that email now shows the
+  "welcome back — log in" step instead of a generic error.
+- The $0 express order now prefers an offline payment gateway (bank transfer /
+  mail-in) when one is active — no third-party gateway code runs at all during
+  signup on such stores.
+
+## [1.22.0] - 2026-08-21
+
+### Added
+- **Frictionless onboarding is now a sign-up popup, and fully customisable.**
+  Submitting a prompt opens a clean, accessible modal (email + password) over
+  the page instead of swapping the input in place. Customise it three ways:
+  per-field copy via `data-*` attributes; colours, radius and fonts via CSS
+  custom properties that inherit into the widget (`--spb-accent`, `--spb-bg`,
+  `--spb-modal-bg`, …) plus stable class hooks on every element; or go fully
+  headless (`data-express-mode="headless"`) and build your own sign-up UI,
+  driving it through `window.SwarmzPromptBox` (`submit()`, `on("prompt"|"result")`)
+  and the `swarmz:prompt` / `swarmz:express-result` DOM events.
+- **Minimum password length is configurable** (Reseller Console → Prompt Box),
+  enforced server-side and mirrored in the widget for instant feedback.
+- **"Recent express signups" diagnostics panel** in the console — each attempt's
+  time, email prefix, final step, and outcome, so a stuck signup can be
+  understood at a glance.
+
+### Fixed
+- **Express signups now provision reliably.** The order is always accepted after
+  it is placed, so a new signup no longer strands as a Pending order with no
+  workspace; the new service is resolved through several fallbacks for broad
+  WHMCS 8.x/9.x compatibility.
+- Hardened the sign-up input: a returning customer is cleanly guided to log in,
+  passwords are length-validated (floor and ceiling) and whitespace-only values
+  rejected, before anything reaches account creation.
+
+## [1.21.1] - 2026-08-21
+
+### Fixed
+- **The Prompt Box widget now reflects the Frictionless onboarding toggle
+  immediately.** The widget script was served with an hour-long cache, so
+  turning the feature on (or off) could appear to do nothing until caches
+  expired — the visitor kept landing in the cart instead of the signup
+  overlay. The script that carries this setting is no longer cached, so a
+  page reload always picks up the current mode.
+
+## [1.21.0] - 2026-08-21
+
+### Added
+- **Frictionless onboarding for the Prompt Box.** Turn it on from the
+  Reseller Console's Prompt Box page and a visitor who submits a prompt is
+  asked for just an email and a password &mdash; no address, no billing
+  details &mdash; then lands straight in the builder with their app already
+  building. The WHMCS client account, the $0 order, and the first sign-in
+  all happen behind the scenes in one request; address and billing are
+  still collected the normal way, at the customer's first paid order. Off
+  by default, with an optional terms-of-service link that can be required
+  before signup completes.
 
 ## [1.20.2] - 2026-08-12
 

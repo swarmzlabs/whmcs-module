@@ -546,6 +546,8 @@ class Console
             . 'in your WHMCS cart &mdash; the prompt rides along automatically. When the order provisions, their workspace '
             . 'opens on their very first login with that app <strong>already building</strong>.</p>';
 
+        $out .= $this->renderExpressSignupCard();
+
         $products = PromptBox::swarmzProducts();
         $visible = array_values(array_filter($products, function ($p) {
             return empty($p['hidden']);
@@ -684,6 +686,133 @@ class Console
                 . '<th>Captured</th><th>Product</th><th>Prompt</th><th>Status</th><th>Service</th>'
                 . '</tr></thead><tbody>' . $rows . '</tbody></table></div>';
         }
+
+        $out .= $this->renderExpressAttempts();
+
+        return $out;
+    }
+
+    /**
+     * "Recent express signups" diagnostics panel — the last ~20 attempts at
+     * the frictionless flow above, each with the step ExpressSignup reached
+     * and its outcome. logModuleCall never fires from promptbox.php's
+     * public, unauthenticated context, so mod_swarmz_express_attempts (via
+     * the step/note ExpressSignup attaches at every exit) is the only place
+     * a host — or support — can see WHY a given signup failed. Shown
+     * regardless of whether Frictionless onboarding is currently on: a host
+     * who just switched it off after seeing abuse still needs to see the
+     * history that led them there.
+     */
+    private function renderExpressAttempts(): string
+    {
+        $out = '<h3 class="swz-section-title">Recent express signups</h3>';
+        $out .= '<p class="swz-lede">Every attempt at the frictionless signup above, newest first &mdash; '
+            . 'use this to see exactly where and why one didn&rsquo;t go through.</p>';
+
+        $rows = PromptBox::recentExpressAttempts(20);
+        if (empty($rows)) {
+            return $out . '<p class="swz-muted">None yet &mdash; attempts at the frictionless signup will show up here.</p>';
+        }
+
+        $body = '';
+        foreach ($rows as $r) {
+            $step = trim((string) ($r->step ?? ''));
+            if ($step === '') {
+                $outcome = '<span class="swz-badge swz-badge-neutral">In progress&hellip;</span>';
+            } elseif (strpos($step, 'ok') === 0) {
+                $outcome = '<span class="swz-badge swz-badge-ok">Success</span>';
+            } else {
+                $outcome = '<span class="swz-badge swz-badge-bad">Failed</span>';
+            }
+            $prefix = trim((string) ($r->note ?? ''));
+            $body .= '<tr>'
+                . '<td>' . $this->esc((string) $r->created_at) . '</td>'
+                . '<td>' . ($prefix !== '' ? $this->esc($prefix) . '&hellip;' : '<span class="swz-muted">&mdash;</span>') . '</td>'
+                . '<td>' . ($step !== '' ? '<code>' . $this->esc($step) . '</code>' : '<span class="swz-muted">&mdash;</span>') . '</td>'
+                . '<td>' . $outcome . '</td>'
+                . '</tr>';
+        }
+
+        return $out . '<div class="swz-tablewrap"><table class="swz-table"><thead><tr>'
+            . '<th>Time</th><th>Email</th><th>Final step</th><th>Outcome</th>'
+            . '</tr></thead><tbody>' . $body . '</tbody></table></div>';
+    }
+
+    /**
+     * "Frictionless onboarding" opt-in card — email+password signup for the
+     * Prompt Box (promptbox.php?a=express), rendered above the snippet
+     * builder. Off by default; the endpoint itself re-checks
+     * Helpers::expressSignupEnabled() server-side, so this form is a
+     * convenience, never the only gate. Only reached once render() has
+     * already confirmed the provisioning (server) module is present, so the
+     * Helpers:: calls below are safe unconditionally (same assumption every
+     * other method on this page already makes).
+     */
+    private function renderExpressSignupCard(): string
+    {
+        $saved = '';
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_express_save'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $enabledIn = !empty($_POST['swz_express_enabled']) ? 'on' : 'off';
+            $tosUrlIn = trim((string) ($_POST['swz_express_tos_url'] ?? ''));
+            $tosUrlIn = preg_match('#^https?://#i', $tosUrlIn) ? $tosUrlIn : '';
+            // Same clamp Helpers::expressMinPassword() applies when reading
+            // it back, so a bad/blank/out-of-range value typed here can never
+            // produce an unusable (or unenforced) floor.
+            $minPassIn = filter_var($_POST['swz_express_min_password'] ?? 8, FILTER_VALIDATE_INT);
+            if ($minPassIn === false) {
+                $minPassIn = 8;
+            }
+            $minPassIn = max(6, min(64, (int) $minPassIn));
+            $this->saveAddonSetting('Express Signup', $enabledIn);
+            $this->saveAddonSetting('Express ToS URL', $tosUrlIn);
+            $this->saveAddonSetting('Express Min Password', (string) $minPassIn);
+            $saved = $this->notice('success',
+                'Saved. The Prompt Box widget reflects this immediately &mdash; visitors who '
+                . 'reload the page get the new behavior right away (the widget script is not cached).'
+            );
+        }
+
+        $enabled = \WHMCS\Module\Server\Swarmz\Helpers::expressSignupEnabled();
+        $tosUrl = \WHMCS\Module\Server\Swarmz\Helpers::expressTosUrl();
+        $minPassword = \WHMCS\Module\Server\Swarmz\Helpers::expressMinPassword();
+        $token = $this->adminFormToken();
+
+        $out = '<div class="swz-section"><h3 class="swz-section-title">Frictionless onboarding</h3>';
+        $out .= '<p class="swz-section-sub">A swarmz.net-style signup for this Prompt Box: the visitor submits their '
+            . 'prompt, then just an email and a password &mdash; no address, no billing &mdash; and lands straight in '
+            . 'the builder with their app already building. The WHMCS client account is created behind the scenes; '
+            . 'address and billing are collected the normal way, at their first paid order.</p>';
+        $out .= $saved;
+        $out .= '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">'
+            . $token
+            . '<input type="hidden" name="swz_express_save" value="1" />'
+            . '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;margin-bottom:12px;">'
+            . '<input type="checkbox" name="swz_express_enabled" value="1" style="margin-top:2px;"' . ($enabled ? ' checked' : '') . ' />'
+            . '<span><strong>Turn on frictionless onboarding.</strong> Off by default.</span>'
+            . '</label>'
+            . '<label style="display:block;font-size:12px;color:#6b7280;max-width:420px;">Terms of Service URL (optional)<br>'
+            . '<input type="text" name="swz_express_tos_url" value="' . $this->esc($tosUrl) . '" placeholder="https://example.com/terms" '
+            . 'style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;" /></label>'
+            . '<p class="swz-muted" style="margin:6px 0 14px;">When set, the visitor must tick an &ldquo;I agree to the terms&rdquo; box before their account is created.</p>'
+            . '<label style="display:block;font-size:12px;color:#6b7280;max-width:180px;">Minimum password length<br>'
+            . '<input type="number" name="swz_express_min_password" value="' . (int) $minPassword . '" min="6" max="64" step="1" '
+            . 'style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;" /></label>'
+            . '<p class="swz-muted" style="margin:6px 0 14px;">Between 6 and 64 characters. Defaults to 8; WHMCS&rsquo;s own password strength meter is bypassed for this flow, so this is the only floor enforced.</p>'
+            . '<button type="submit" class="swz-save">Save</button>'
+            . '</form>';
+        $out .= $this->notice('info',
+            '<strong>What to check before turning this on:</strong>'
+            . '<ul style="margin:8px 0 0;padding-left:18px;">'
+            . '<li>The product behind this widget is a Swarmz product with a <strong>Plan</strong> selected (Products/Services &rarr; Module Settings).</li>'
+            . '<li>The $0 order this creates is auto-accepted, which <strong>bypasses fraud screening</strong> for that order.</li>'
+            . '<li>A stricter per-IP rate limit applies than the plain Prompt Box.</li>'
+            . '<li>Visitors already on the page keep the mode they loaded with until they reload &mdash; the toggle reaches new page loads immediately.</li>'
+            . '</ul>'
+        );
+        $out .= '</div>';
 
         return $out;
     }

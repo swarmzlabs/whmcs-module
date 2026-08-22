@@ -5,7 +5,7 @@
  *   GET ?intent=<code>  → signs the customer into this WHMCS and lands them on
  *                         the upgrade page for their Swarmz service.
  *
- * Flow (v1.21.0):
+ * Flow (v1.23.0):
  *   1. The customer clicks a plan in the plan picker inside their white-label
  *      Swarmz editor. The platform mints a ONE-TIME intent for that customer's
  *      own workspace (2-minute expiry) and redirects the browser here.

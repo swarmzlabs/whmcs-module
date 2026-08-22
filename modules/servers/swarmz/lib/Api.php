@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.21.0';
+    const VERSION = '1.23.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -138,7 +138,7 @@ class Api
         } else {
             $body['external_ref'] = $refOrId;
         }
-        // v1.21.0: report this install's SystemURL so the platform can deep-link
+        // v1.23.0: report this install's SystemURL so the platform can deep-link
         // customers back into this WHMCS for upgrades (see upgrade.php).
         $portal = self::billingPortal();
         if ($portal !== null) {
