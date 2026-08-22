@@ -17,6 +17,11 @@
  *   3. We look up the service → owning client, mint a WHMCS single sign-on
  *      token (`CreateSsoToken`, WHMCS 7.10+) with a custom redirect to
  *      `upgrade.php?type=package&id=<serviceid>`, and 302 the browser to it.
+ *      v1.25.0: when the intent names a plan this install sells (the platform
+ *      returns `plan_code`), the redirect carries `step=2&pid=<product>&
+ *      billingcycle=<cycle>` — exactly what the stock "Choose Product" form
+ *      posts — so the customer lands on WHMCS's checkout step for that
+ *      product, not the product list (Helpers::resolveUpgradeTarget).
  *      If `CreateSsoToken` is unavailable/refused we 302 to the service's
  *      client-area page instead — WHMCS prompts for login and continues.
  *
@@ -122,10 +127,23 @@ $abs = static function (string $path) use ($systemUrl): string {
     return (preg_match('#^https?://#i', $systemUrl) ? $systemUrl . '/' : '') . $path;
 };
 
-// 3) Single sign-on straight onto the upgrade page (WHMCS 7.10+). Relative
-//    paths with query strings are supported by sso:custom_redirect; the
-//    service's upgrade page is upgrade.php?type=package&id=<serviceid>.
+// 3) Single sign-on straight onto the upgrade flow (WHMCS 7.10+). Relative
+//    paths with query strings are supported by sso:custom_redirect. When the
+//    platform names the plan the customer picked and this install sells it,
+//    skip the product list and land on WHMCS's checkout step for that product
+//    (step=2 + pid + billingcycle — the stock "Choose Product" request, which
+//    upgrade.php reads from $_REQUEST). Otherwise the product list, where
+//    WHMCS shows its own truth.
+$planCode = isset($body['plan_code']) && is_string($body['plan_code']) ? trim($body['plan_code']) : '';
+$target = null;
+if ($planCode !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/', $planCode)) {
+    $target = \WHMCS\Module\Server\Swarmz\Helpers::resolveUpgradeTarget($serviceId, $planCode);
+}
 $upgradePath = 'upgrade.php?type=package&id=' . $serviceId;
+if ($target !== null) {
+    $upgradePath .= '&step=2&pid=' . (int) $target['pid']
+        . '&billingcycle=' . rawurlencode((string) $target['billingcycle']);
+}
 $redirect = '';
 try {
     $sso = localAPI('CreateSsoToken', [
@@ -141,7 +159,7 @@ try {
         if (isset($logged['redirect_url'])) {
             $logged['redirect_url'] = '[redacted]';
         }
-        logModuleCall('swarmz', 'UpgradeSso', ['client_id' => $clientId, 'service_id' => $serviceId], $logged, $logged, $maskVars);
+        logModuleCall('swarmz', 'UpgradeSso', ['client_id' => $clientId, 'service_id' => $serviceId, 'path' => $upgradePath], $logged, $logged, $maskVars);
     }
     if (isset($sso['result']) && $sso['result'] === 'success' && !empty($sso['redirect_url'])) {
         $redirect = (string) $sso['redirect_url'];

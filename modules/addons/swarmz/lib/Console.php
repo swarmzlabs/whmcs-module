@@ -252,7 +252,7 @@ class Console
     {
         /** @var \WHMCS\Module\Server\Swarmz\Api $api */
         $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
-        $res = $api->postPlatform('platform-usage', \WHMCS\Module\Server\Swarmz\Api::withPortal(['period' => $period]));
+        $res = $api->postPlatform('platform-usage', \WHMCS\Module\Server\Swarmz\Api::withPortal(['period' => $period], true));
         $usage = (isset($res['body']['usage']) && is_array($res['body']['usage'])) ? $res['body']['usage'] : [];
         $balances = (isset($res['body']['balances']) && is_array($res['body']['balances'])) ? $res['body']['balances'] : [];
 

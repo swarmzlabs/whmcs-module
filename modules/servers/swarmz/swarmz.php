@@ -259,7 +259,7 @@ function swarmz_CreateAccount(array $params)
         // v1.23.0: tell the platform where this WHMCS lives so it can deep-link
         // the customer back here for upgrades (upgrade.php). Omitted when
         // SystemURL is unset/non-https; the platform then uses its fallbacks.
-        $body = Api::withPortal($body);
+        $body = Api::withPortal($body, true);
 
         // Prompt-box intent (v1.9.0): a prompt the customer typed on the
         // host's storefront, bound to this service by the addon's checkout

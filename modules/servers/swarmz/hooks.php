@@ -181,7 +181,7 @@ function _swarmz_cron_reconcile(): void
     try {
         // withPortal (v1.24.0): the daily usage read also registers this
         // install's billing portal — every host self-registers within a day.
-        $res = $api->postPlatform('platform-usage', Api::withPortal(['period' => 'current_month']));
+        $res = $api->postPlatform('platform-usage', Api::withPortal(['period' => 'current_month'], true));
         $usage = (isset($res['body']['usage']) && is_array($res['body']['usage'])) ? $res['body']['usage'] : [];
         $byWs = (isset($usage['by_workspace']) && is_array($usage['by_workspace'])) ? $usage['by_workspace'] : [];
         foreach ($byWs as $w) {

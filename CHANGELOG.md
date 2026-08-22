@@ -5,6 +5,34 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.25.0] - 2026-08-22
+
+### Added
+- **The customer's plan picker only offers what this WHMCS sells.** Routine
+  platform calls (daily usage read, plan lists, provisioning, plan refresh)
+  now report, alongside the billing portal, which Swarmz plan codes are
+  bound to a live product here and — from the Upgrades tab configuration
+  (`tblproduct_upgrade_products`) — which plans WHMCS will actually offer as
+  an upgrade from each product. The platform hides everything else from the
+  white-label editor's plan picker, so a plan that exists on Swarmz but has
+  no product in this install (or isn't an allowed upgrade from the
+  customer's product) never turns into a dead-end upgrade link. Hidden
+  products still count as sellable (hidden only removes them from the order
+  form; package upgrades run through upgrade.php). Read-only, memoised per
+  request; any read failure simply omits the catalog (no filtering).
+- **Upgrade links land on checkout.** When the customer picks a plan in the
+  editor, `upgrade.php` now resolves the WHMCS product that carries that plan
+  (preferring one the Upgrades tab allows from their current product) and
+  single-signs them straight onto WHMCS's upgrade checkout step — `step=2`
+  + `pid` + `billingcycle`, exactly what the stock "Choose Product" form
+  posts — one click from the editor to "Checkout". The billing cycle is the
+  service's current cycle when the target prices it, else its first priced
+  cycle (free / one-time products use their own). Falls back to the product
+  list when nothing qualifies.
+
+### Notes
+- No schema changes; no settings changed. Update is a plain overlay.
+
 ## [1.24.0] - 2026-08-22
 
 ### Fixed

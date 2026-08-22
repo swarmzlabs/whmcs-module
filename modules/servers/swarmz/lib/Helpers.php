@@ -246,6 +246,215 @@ class Helpers
     }
 
     /**
+     * What this WHMCS actually SELLS of the Swarmz catalogue (v1.25.0). The
+     * platform hides everything else from the customer's plan picker, so a
+     * plan that exists on Swarmz but has no product here — or that WHMCS will
+     * not offer as an upgrade from the customer's current product — is never
+     * a dead end behind an upgrade link.
+     *
+     *   sellable  plan codes bound (config option "Plan") to a Swarmz product
+     *             that is not retired. Hidden products still count: "hidden"
+     *             only removes a product from the order form, and package
+     *             upgrades run through upgrade.php, not the order form.
+     *   upgrades  plan code → plan codes WHMCS allows as package upgrades from
+     *             any product carrying that code (Setup → Products → Upgrades
+     *             tab; tblproduct_upgrade_products). Omitted when the table is
+     *             absent, so the platform falls back to the sellable filter.
+     *
+     * Memoised per request; null on any read failure (the platform treats a
+     * missing catalog as "unknown" = no filtering). Sent alongside the
+     * billing-portal descriptor on routine calls — see Api::withPortal().
+     *
+     * @return array{sellable: string[], upgrades?: array<string, string[]>}|null
+     */
+    public static function whmcsPlanCatalog(): ?array
+    {
+        static $memo = false;
+        if ($memo !== false) {
+            return $memo;
+        }
+        try {
+            $codeByPid = [];
+            $sellable = [];
+            $rows = Capsule::table('tblproducts')->where('servertype', 'swarmz')->get();
+            foreach ($rows as $r) {
+                $code = trim((string) ($r->configoption1 ?? ''));
+                if ($code === '' || $code === self::PLAN_NONE_LABEL) {
+                    continue; // no plan selected — cannot provision, cannot sell
+                }
+                if (((int) ($r->retired ?? 0)) === 1) {
+                    continue; // retired products are gone from every storefront
+                }
+                $pid = (int) $r->id;
+                $codeByPid[$pid] = $code;
+                if (!in_array($code, $sellable, true)) {
+                    $sellable[] = $code;
+                }
+            }
+            $catalog = ['sellable' => array_values($sellable)];
+
+            if (!empty($codeByPid) && Capsule::schema()->hasTable('tblproduct_upgrade_products')) {
+                $upgrades = [];
+                foreach ($codeByPid as $code) {
+                    if (!isset($upgrades[$code])) {
+                        $upgrades[$code] = [];
+                    }
+                }
+                $pairs = Capsule::table('tblproduct_upgrade_products')
+                    ->whereIn('product_id', array_keys($codeByPid))
+                    ->get(['product_id', 'upgrade_product_id']);
+                foreach ($pairs as $p) {
+                    $from = (int) $p->product_id;
+                    $to = (int) $p->upgrade_product_id;
+                    if (!isset($codeByPid[$from], $codeByPid[$to])) {
+                        continue; // target must be a live Swarmz product
+                    }
+                    $fromCode = $codeByPid[$from];
+                    $toCode = $codeByPid[$to];
+                    if ($toCode === $fromCode || in_array($toCode, $upgrades[$fromCode], true)) {
+                        continue;
+                    }
+                    $upgrades[$fromCode][] = $toCode;
+                }
+                $catalog['upgrades'] = $upgrades;
+            }
+            return $memo = $catalog;
+        } catch (\Throwable $e) {
+            return $memo = null;
+        }
+    }
+
+    /**
+     * Which WHMCS product + billing cycle a customer should land on when they
+     * pick a Swarmz plan in their editor (v1.25.0) — lets upgrade.php send
+     * them straight to WHMCS's checkout step (upgrade.php step=2) instead of
+     * the product list. Mirrors exactly what the stock "Choose Product" form
+     * posts: pid + billingcycle (free | onetime | monthly | quarterly |
+     * semiannually | annually | biennially | triennially).
+     *
+     *   product  a non-retired Swarmz product whose "Plan" option is $planCode
+     *            AND that WHMCS lists as an allowed upgrade from the service's
+     *            current product (tblproduct_upgrade_products). When that table
+     *            is unreadable, any matching product qualifies.
+     *   cycle    the target's pricing type decides: free → "free", onetime →
+     *            "onetime", recurring → the service's current cycle when the
+     *            target prices it (in the client's currency), else the first
+     *            priced cycle. WHMCS stores -1 for a disabled cycle.
+     *
+     * Null when nothing qualifies — the caller falls back to the product list,
+     * where WHMCS shows its own truth. Read-only.
+     *
+     * @return array{pid:int, billingcycle:string}|null
+     */
+    public static function resolveUpgradeTarget(int $serviceId, string $planCode): ?array
+    {
+        $planCode = trim($planCode);
+        if ($planCode === '' || $serviceId <= 0) {
+            return null;
+        }
+        try {
+            $svc = Capsule::table('tblhosting')->where('id', $serviceId)->first(['packageid', 'userid', 'billingcycle']);
+            if (!$svc) {
+                return null;
+            }
+            $fromPid = (int) $svc->packageid;
+
+            // Candidate products carrying this plan code (insertion order = id order).
+            $candidates = [];
+            $rows = Capsule::table('tblproducts')
+                ->where('servertype', 'swarmz')
+                ->orderBy('id')
+                ->get(['id', 'configoption1', 'paytype', 'retired']);
+            foreach ($rows as $r) {
+                if (trim((string) ($r->configoption1 ?? '')) !== $planCode) {
+                    continue;
+                }
+                if (((int) ($r->retired ?? 0)) === 1) {
+                    continue;
+                }
+                $candidates[(int) $r->id] = strtolower(trim((string) ($r->paytype ?? 'recurring')));
+            }
+            if (empty($candidates)) {
+                return null;
+            }
+
+            // Prefer what WHMCS itself will accept as an upgrade from this product.
+            $pid = 0;
+            if (Capsule::schema()->hasTable('tblproduct_upgrade_products')) {
+                $allowedIds = [];
+                $allowed = Capsule::table('tblproduct_upgrade_products')
+                    ->where('product_id', $fromPid)
+                    ->whereIn('upgrade_product_id', array_keys($candidates))
+                    ->get(['upgrade_product_id']);
+                foreach ($allowed as $a) {
+                    $allowedIds[] = (int) $a->upgrade_product_id;
+                }
+                foreach (array_keys($candidates) as $cid) {
+                    if (in_array($cid, $allowedIds, true)) {
+                        $pid = $cid;
+                        break;
+                    }
+                }
+                if ($pid === 0) {
+                    return null; // WHMCS won't offer it from here — show the list instead
+                }
+            } else {
+                $pid = (int) array_key_first($candidates);
+            }
+
+            $paytype = $candidates[$pid];
+            if ($paytype === 'free') {
+                return ['pid' => $pid, 'billingcycle' => 'free'];
+            }
+            if ($paytype === 'onetime') {
+                return ['pid' => $pid, 'billingcycle' => 'onetime'];
+            }
+
+            // Recurring: a cycle the target actually prices in the client's currency.
+            $currencyId = 0;
+            try {
+                $client = Capsule::table('tblclients')->where('id', (int) $svc->userid)->first(['currency']);
+                $currencyId = $client ? (int) $client->currency : 0;
+            } catch (\Throwable $e) {
+                $currencyId = 0;
+            }
+            if ($currencyId <= 0) {
+                try {
+                    $def = Capsule::table('tblcurrencies')->where('default', 1)->first(['id']);
+                    $currencyId = $def ? (int) $def->id : 0;
+                } catch (\Throwable $e) {
+                    $currencyId = 0;
+                }
+            }
+            $pricing = $currencyId > 0
+                ? Capsule::table('tblpricing')->where('type', 'product')->where('relid', $pid)->where('currency', $currencyId)->first()
+                : null;
+            if (!$pricing) {
+                $pricing = Capsule::table('tblpricing')->where('type', 'product')->where('relid', $pid)->first();
+            }
+            if (!$pricing) {
+                return null;
+            }
+            $priced = [];
+            foreach (['monthly', 'quarterly', 'semiannually', 'annually', 'biennially', 'triennially'] as $cycle) {
+                $value = isset($pricing->{$cycle}) ? (float) $pricing->{$cycle} : -1.0;
+                if ($value >= 0) {
+                    $priced[] = $cycle;
+                }
+            }
+            if (empty($priced)) {
+                return null;
+            }
+            // "Semi-Annually" → "semiannually": the service's cycle in pricing-key form.
+            $current = strtolower(str_replace(['-', ' '], '', (string) ($svc->billingcycle ?? '')));
+            $cycle = in_array($current, $priced, true) ? $current : $priced[0];
+            return ['pid' => $pid, 'billingcycle' => $cycle];
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
      * Best-effort fetch of the account's named plans for UI population, tolerant
      * of an undeployed / unreachable platform-plans endpoint (mirrors the
      * platform-plan-refresh "endpoint maybe-undeployed" tolerance).
