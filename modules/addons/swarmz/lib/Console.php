@@ -105,6 +105,14 @@ class Console
             ) . '</div>';
         }
 
+        // v1.25.0: WHMCS package upgrades gate the plan picker inside the
+        // customer's editor. A host who hasn't allowed any upgrade between
+        // their Swarmz products has customers seeing "contact us" instead of
+        // plans — say where the switch is. Dashboard only.
+        if ($action === '') {
+            $out .= $this->upgradesConfigNotice();
+        }
+
         // Admin SSO launcher (v1.11.0) — "Open workspace" from the admin
         // service tab. Mints a fresh platform-sso redirect server-side and
         // 302s in a new tab, mirroring the client area's `launch` action
@@ -1520,6 +1528,41 @@ class Console
     private function whmcsRootForDisplay(): string
     {
         return defined('ROOTDIR') ? rtrim((string) ROOTDIR, '/') . '/' : '';
+    }
+
+    /**
+     * Warn when two or more Swarmz plans are sold here but WHMCS allows no
+     * package upgrade between them (Setup → Products → Upgrades tab): the
+     * platform then shows customers "contact {host}" in the editor's plan
+     * picker rather than a dead-end upgrade link. Empty string when upgrades
+     * are configured, the table is unreadable, or there is only one plan.
+     */
+    private function upgradesConfigNotice(): string
+    {
+        try {
+            $catalog = \WHMCS\Module\Server\Swarmz\Helpers::whmcsPlanCatalog();
+        } catch (\Throwable $e) {
+            return '';
+        }
+        if (!is_array($catalog) || !isset($catalog['upgrades'])) {
+            return '';
+        }
+        $sellable = isset($catalog['sellable']) && is_array($catalog['sellable']) ? $catalog['sellable'] : [];
+        if (count($sellable) < 2) {
+            return '';
+        }
+        foreach ((array) $catalog['upgrades'] as $targets) {
+            if (!empty($targets)) {
+                return '';
+            }
+        }
+        return $this->notice('warning',
+            '<strong>Customers can&rsquo;t upgrade from their editor yet.</strong> You sell '
+            . count($sellable) . ' Swarmz plans, but no product allows an upgrade to another, so the '
+            . 'plan picker inside the editor tells customers to contact you. Allow upgrades on each product under '
+            . '<strong>Setup &rarr; Products/Services &rarr; (product) &rarr; Upgrades</strong> and they can move up on their own '
+            . '&mdash; the picker follows that configuration automatically.'
+        );
     }
 
     private function notice(string $type, string $html): string
