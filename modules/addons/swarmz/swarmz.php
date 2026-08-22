@@ -53,7 +53,7 @@ function swarmz_config()
         'description' => 'Resell Swarmz AI workspaces from WHMCS: see which customer is on which plan and their live credit + cloud usage (your wholesale cost), and configure the host-side presentation that is kept off the Swarmz dashboard. Pairs with the Swarmz provisioning (server) module.',
         'author'      => 'Swarmz Labs',
         'language'    => 'english',
-        'version'     => '1.23.0',
+        'version'     => '1.24.0',
         'fields'      => [
             'API Base URL' => [
                 'FriendlyName' => 'API Base URL',
@@ -108,6 +108,7 @@ function swarmz_activate()
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
+    _swarmz_addon_registerBillingPortal();
     return [
         'status'      => 'success',
         'description' => 'Swarmz Reseller Console activated. Set your API Key in this module\'s settings (if not already), then open it from the sidebar to view customer plans and live usage — and grab your embeddable Prompt Box from the toolbar.',
@@ -124,6 +125,32 @@ function swarmz_upgrade($vars)
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
+    _swarmz_addon_registerBillingPortal();
+}
+
+/**
+ * Register this install's billing portal with the platform immediately
+ * (v1.24.0) — the WHMCS URL behind the editor's upgrade deep links. Runs on
+ * activation and on every version upgrade so an updated host lights the links
+ * up at once rather than after the next daily cron / customer login.
+ * Best-effort: no key yet, an unreachable API, or a non-https SystemURL all
+ * silently defer to the routine calls that also carry the portal.
+ */
+function _swarmz_addon_registerBillingPortal(): void
+{
+    try {
+        $lib = __DIR__ . '/../../servers/swarmz/lib';
+        if (!is_file($lib . '/Api.php')) {
+            return;
+        }
+        require_once $lib . '/Exceptions.php';
+        require_once $lib . '/Api.php';
+        require_once $lib . '/Helpers.php';
+        $api = \WHMCS\Module\Server\Swarmz\Helpers::makeApiClient([]);
+        $api->registerBillingPortal();
+    } catch (\Throwable $e) {
+        // Deferred to the daily cron / next SSO / next console view.
+    }
 }
 
 /**

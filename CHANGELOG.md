@@ -5,6 +5,22 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.24.0] - 2026-08-22
+
+### Fixed
+- **Upgrade deep links now light up for existing installs.** 1.23.0 only
+  reported this install's billing portal (its SystemURL) on new orders and
+  plan refreshes, so a host with an existing customer base never registered
+  it and the editor's plan picker fell back to "contact your provider". The
+  portal now rides along on every routine platform call — the daily cron's
+  usage read, plan lists (console, product config, cron), every customer and
+  admin SSO, Test Connection, provisioning and plan refresh — and is
+  registered immediately on addon activation and on every version upgrade.
+  No host configuration needed; nothing to click.
+
+### Notes
+- No schema changes; no settings changed. Update is a plain overlay.
+
 ## [1.23.0] - 2026-08-22
 
 ### Added

@@ -252,7 +252,7 @@ class Console
     {
         /** @var \WHMCS\Module\Server\Swarmz\Api $api */
         $api = new \WHMCS\Module\Server\Swarmz\Api($this->apiKey, $this->baseUrl);
-        $res = $api->postPlatform('platform-usage', ['period' => $period]);
+        $res = $api->postPlatform('platform-usage', \WHMCS\Module\Server\Swarmz\Api::withPortal(['period' => $period]));
         $usage = (isset($res['body']['usage']) && is_array($res['body']['usage'])) ? $res['body']['usage'] : [];
         $balances = (isset($res['body']['balances']) && is_array($res['body']['balances'])) ? $res['body']['balances'] : [];
 
@@ -1587,7 +1587,7 @@ class Console
                 'external_ref' => \WHMCS\Module\Server\Swarmz\Helpers::buildExternalRef($serviceId),
                 'tenant_id'    => $tenantId,
             ];
-            $result = $api->postPlatform('platform-sso', $body);
+            $result = $api->postPlatform('platform-sso', \WHMCS\Module\Server\Swarmz\Api::withPortal($body));
             $redirect = isset($result['body']['redirectTo']) ? (string) $result['body']['redirectTo'] : '';
 
             if (function_exists('logModuleCall')) {
