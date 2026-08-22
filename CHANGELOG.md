@@ -5,6 +5,29 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.25.1] - 2026-08-22
+
+### Fixed
+- **Retired products keep steering their customers.** The sellable-plans
+  catalog now reports a retired product's Upgrades-tab configuration
+  (customers still on it can upgrade away; nobody can move to it), matching
+  what `upgrade.php` resolves. Previously a retired source dropped out of the
+  map and the picker fell back to the plain sellable list.
+- **Out-of-stock products are not offered.** Products with stock control on
+  and nothing left are skipped as upgrade targets — in the catalog and when
+  landing a customer on checkout — mirroring WHMCS's own upgrade list.
+- **Plan codes with a leading `_` or `-`** (valid on the platform) are
+  accepted by the checkout-landing resolver; plan-code matching is
+  case-insensitive.
+- **An unreadable catalog now clears, never freezes.** When the catalog can't
+  be read the report says so explicitly, so the platform shows every plan
+  (fail-open) instead of filtering on a stale snapshot; the upgrades map is
+  always sent as a JSON object.
+- **Reseller Console notice** when you sell two or more Swarmz plans but WHMCS
+  allows no package upgrade between them — the editor's plan picker then tells
+  customers to contact you — with the exact setting to change (Setup →
+  Products/Services → product → Upgrades).
+
 ## [1.25.0] - 2026-08-22
 
 ### Added

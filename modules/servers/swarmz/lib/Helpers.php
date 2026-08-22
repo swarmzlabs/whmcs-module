@@ -274,7 +274,8 @@ class Helpers
             return $memo;
         }
         try {
-            $codeByPid = [];
+            $codeByPid = []; // every coded Swarmz product, retired included — upgrade SOURCES
+            $liveByPid = []; // not retired — sellable + upgrade TARGETS
             $sellable = [];
             $rows = Capsule::table('tblproducts')->where('servertype', 'swarmz')->get();
             foreach ($rows as $r) {
@@ -282,11 +283,20 @@ class Helpers
                 if ($code === '' || $code === self::PLAN_NONE_LABEL) {
                     continue; // no plan selected — cannot provision, cannot sell
                 }
-                if (((int) ($r->retired ?? 0)) === 1) {
-                    continue; // retired products are gone from every storefront
-                }
                 $pid = (int) $r->id;
                 $codeByPid[$pid] = $code;
+                if (((int) ($r->retired ?? 0)) === 1) {
+                    // Retiring "does not affect existing services": customers still
+                    // on it can upgrade AWAY (its Upgrades-tab rows keep steering
+                    // them) but nobody can move TO it.
+                    continue;
+                }
+                if (((int) ($r->stockcontrol ?? 0)) === 1 && ((int) ($r->qty ?? 0)) <= 0) {
+                    // Out of stock: WHMCS leaves it off its own upgrade list, so it
+                    // is a SOURCE still, never a target / sellable.
+                    continue;
+                }
+                $liveByPid[$pid] = $code;
                 if (!in_array($code, $sellable, true)) {
                     $sellable[] = $code;
                 }
@@ -306,17 +316,19 @@ class Helpers
                 foreach ($pairs as $p) {
                     $from = (int) $p->product_id;
                     $to = (int) $p->upgrade_product_id;
-                    if (!isset($codeByPid[$from], $codeByPid[$to])) {
+                    if (!isset($codeByPid[$from], $liveByPid[$to])) {
                         continue; // target must be a live Swarmz product
                     }
                     $fromCode = $codeByPid[$from];
-                    $toCode = $codeByPid[$to];
+                    $toCode = $liveByPid[$to];
                     if ($toCode === $fromCode || in_array($toCode, $upgrades[$fromCode], true)) {
                         continue;
                     }
                     $upgrades[$fromCode][] = $toCode;
                 }
-                $catalog['upgrades'] = $upgrades;
+                // Always a JSON object on the wire: a purely numeric plan code
+                // would otherwise make json_encode emit a list.
+                $catalog['upgrades'] = (object) $upgrades;
             }
             return $memo = $catalog;
         } catch (\Throwable $e) {
@@ -364,13 +376,16 @@ class Helpers
             $rows = Capsule::table('tblproducts')
                 ->where('servertype', 'swarmz')
                 ->orderBy('id')
-                ->get(['id', 'configoption1', 'paytype', 'retired']);
+                ->get(['id', 'configoption1', 'paytype', 'retired', 'stockcontrol', 'qty']);
             foreach ($rows as $r) {
-                if (trim((string) ($r->configoption1 ?? '')) !== $planCode) {
+                if (strcasecmp(trim((string) ($r->configoption1 ?? '')), $planCode) !== 0) {
                     continue;
                 }
                 if (((int) ($r->retired ?? 0)) === 1) {
                     continue;
+                }
+                if (((int) ($r->stockcontrol ?? 0)) === 1 && ((int) ($r->qty ?? 0)) <= 0) {
+                    continue; // out of stock — WHMCS's own upgrade list skips it too
                 }
                 $candidates[(int) $r->id] = strtolower(trim((string) ($r->paytype ?? 'recurring')));
             }

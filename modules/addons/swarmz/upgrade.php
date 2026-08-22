@@ -136,7 +136,8 @@ $abs = static function (string $path) use ($systemUrl): string {
 //    WHMCS shows its own truth.
 $planCode = isset($body['plan_code']) && is_string($body['plan_code']) ? trim($body['plan_code']) : '';
 $target = null;
-if ($planCode !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/', $planCode)) {
+// Same shape the platform accepts for plan codes (leading _ / - included).
+if ($planCode !== '' && preg_match('/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/', $planCode)) {
     $target = \WHMCS\Module\Server\Swarmz\Helpers::resolveUpgradeTarget($serviceId, $planCode);
 }
 $upgradePath = 'upgrade.php?type=package&id=' . $serviceId;
