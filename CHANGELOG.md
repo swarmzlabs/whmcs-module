@@ -5,6 +5,30 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.23.0] - 2026-08-22
+
+### Added
+- **Upgrade deep links from the Swarmz editor into this WHMCS.** When a
+  customer opens the plan picker inside their white-label editor and picks a
+  plan, the platform can now send them straight to this install's upgrade
+  page for their service — already signed in. New public endpoint
+  `modules/addons/swarmz/upgrade.php?intent=…`: it exchanges the one-time
+  intent with the platform (`platform-upgrade-intent`, Bearer API key), looks
+  up the service, and mints a WHMCS `CreateSsoToken` (WHMCS 7.10+) onto
+  `upgrade.php?type=package&id=<service>`. The intent is minted by the
+  platform for the signed-in customer's own workspace only, expires in two
+  minutes and is single-use; the endpoint never receives or stores WHMCS
+  credentials. If `CreateSsoToken` is unavailable the endpoint falls back to
+  the service's client-area page (WHMCS prompts for login).
+- **Billing-portal self-registration.** Provisioning (`CreateAccount`) and
+  plan-refresh calls now report this install's `SystemURL` as
+  `billing_portal: {kind: "whmcs", url}`, so the platform learns where to
+  deep-link without any host configuration. Only sent when SystemURL is
+  set and https.
+
+### Notes
+- No schema changes; no settings changed. Update is a plain overlay.
+
 ## [1.22.1] - 2026-08-21
 
 ### Fixed
