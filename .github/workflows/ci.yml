@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  php-checks:
+    name: PHP checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Show PHP version
+        run: php --version
+
+      - name: Check PHP syntax
+        run: find modules test -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Run offline tests
+        run: |
+          php test/lang-parity.php
+          php test/client-dir.php
+          php test/console-token.php
+          php test/express-harness.php
