@@ -160,3 +160,13 @@ host-facing and stays English.
 - The main app repo (`swarmzlabs/swarmz`) is the only repo with a CI merge gate (`typecheck / gate`). There: branch off `staging`, PR into `staging`, merge yourself ONLY when the gate is green; `staging` -> `main` promotion is owner-only. Since 2026-08-27 that gate checks out the PR HEAD (not the synthetic merge commit), so concurrent merges into `staging` cannot re-stale a PR's security ledger — never regenerate the ledger in response to someone else's merge; the push run on `staging` validates the merged tree, and whoever's merge turns staging red fixes forward on `staging` with a grep-able marker commit.
 - NO repo in this org has GitHub branch protection (plan limitation). "Green before merge" is a convention agents must enforce themselves: check CI state before merging, and verify deploys actually happened after pushing.
 - This repo deploys per its own model documented above — read the deploy notes in this file before assuming a push to `main` shipped anything.
+
+## Linear — keep it in sync with the work
+
+Work is tracked in Linear (workspace `swarmz`, single team **SWARMZ**). Claude Code sessions have a Linear MCP connector (load tools via ToolSearch: `list_issues`, `save_issue`, `list_projects`, `save_project`, …). Keep Linear updated as you work:
+
+- **Starting work**: if an existing SWARMZ issue covers it, set it to In Progress. For new, non-trivial bugs or features, create an issue first (team `swarmz`).
+- **Labels**: exactly two exist — `Bug` and `Feature`. Use at most one per issue. NEVER create new labels; repo/area context belongs in the issue title or description (e.g. "auth-worker: …"), not in labels.
+- **Finishing work**: when the PR merges, mark the issue Done; if the work is invalidated, cancel it with a short comment. Reference the issue in the PR body ("Fixes SWARMZ-42") so GitHub↔Linear linking connects them.
+- **Projects**: attach an issue to an active Linear project only when it clearly belongs to one; the unsorted backlog is intentional. Creating, renaming, or deleting projects and labels is owner-only — never do it on your own.
+- **Found-but-not-fixing**: file a Linear issue (`Bug`) instead of leaving a TODO comment.
