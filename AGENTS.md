@@ -154,3 +154,9 @@ host-facing and stays English.
   add a CHANGELOG entry; release ZIPs contain the `modules/` tree only.
 - The docs article (swarmz-docs `content/api/whmcs.mdx`) is part of the
   deliverable — behaviour changes ship with a docs update.
+
+## Team merge & gate rules (org-wide, 2026-08)
+
+- The main app repo (`swarmzlabs/swarmz`) is the only repo with a CI merge gate (`typecheck / gate`). There: branch off `staging`, PR into `staging`, merge yourself ONLY when the gate is green; `staging` -> `main` promotion is owner-only. Since 2026-08-27 that gate checks out the PR HEAD (not the synthetic merge commit), so concurrent merges into `staging` cannot re-stale a PR's security ledger — never regenerate the ledger in response to someone else's merge; the push run on `staging` validates the merged tree, and whoever's merge turns staging red fixes forward on `staging` with a grep-able marker commit.
+- NO repo in this org has GitHub branch protection (plan limitation). "Green before merge" is a convention agents must enforce themselves: check CI state before merging, and verify deploys actually happened after pushing.
+- This repo deploys per its own model documented above — read the deploy notes in this file before assuming a push to `main` shipped anything.
