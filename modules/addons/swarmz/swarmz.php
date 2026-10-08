@@ -26,6 +26,7 @@
 
 use WHMCS\Module\Addon\Swarmz\Console;
 use WHMCS\Module\Addon\Swarmz\CreditPacks;
+use WHMCS\Module\Addon\Swarmz\ExistingCustomer;
 use WHMCS\Module\Addon\Swarmz\PromptBox;
 
 if (!defined('WHMCS')) {
@@ -35,6 +36,7 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/lib/Console.php';
 require_once __DIR__ . '/lib/CreditPacks.php';
 require_once __DIR__ . '/lib/PromptBox.php';
+require_once __DIR__ . '/lib/ExistingCustomer.php';
 require_once __DIR__ . '/lib/Updater.php';
 
 /**
@@ -99,8 +101,10 @@ function swarmz_config()
 }
 
 /**
- * Activation. Creates the prompt-box intent table (mod_swarmz_prompt_intents);
- * everything else reads live from WHMCS + the Swarmz API on each page load.
+ * Activation. Creates the module's own tables (prompt-box intents + express
+ * attempts, credit-pack mappings, editor launches + existing-customer
+ * routing diagnostics); everything else reads live from WHMCS + the Swarmz
+ * API on each page load.
  *
  * @return array{status:string, description:string}
  */
@@ -108,6 +112,7 @@ function swarmz_activate()
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
+    ExistingCustomer::ensureSchema();
     _swarmz_addon_registerBillingPortal();
     return [
         'status'      => 'success',
@@ -125,6 +130,7 @@ function swarmz_upgrade($vars)
 {
     PromptBox::ensureSchema();
     CreditPacks::ensureSchema();
+    ExistingCustomer::ensureSchema();
     _swarmz_addon_registerBillingPortal();
 }
 
@@ -176,4 +182,123 @@ function swarmz_output($vars)
 {
     $console = new Console($vars);
     echo $console->render();
+}
+
+/**
+ * Client-area output (v1.26.0) — the workspace chooser at
+ * index.php?m=swarmz&a=choose. Reached only when the host's "Existing
+ * Customer Workspace" policy is `ask` and a signed-in customer arrives with
+ * a storefront prompt (ExistingCustomer::resolve() redirects here). Lists
+ * the customer's usable workspaces with one "Build it here" each, plus
+ * "Start a new workspace" — both POST with the WHMCS client-area CSRF
+ * token and run the same resolver steps the automatic policies do.
+ *
+ * Unbranded: every string comes from lang/<language>.php (English base).
+ * Never throws into the page: a failure renders the list with a message.
+ *
+ * @param array $vars
+ * @return array
+ */
+function swarmz_clientarea($vars)
+{
+    $clientId = isset($_SESSION['uid']) ? (int) $_SESSION['uid'] : 0;
+    $token = isset($_SESSION[PromptBox::SESSION_KEY]) ? (string) $_SESSION[PromptBox::SESSION_KEY] : '';
+    if ($token !== '' && !preg_match('/^[a-f0-9]{32}$/', $token)) {
+        $token = '';
+    }
+
+    // Strings: the English base overlaid with WHMCS's pick for the client's
+    // language ($vars['_lang']), so a missing translation shows English.
+    $L = [];
+    try {
+        $_ADDONLANG = [];
+        include __DIR__ . '/lang/english.php';
+        $L = $_ADDONLANG;
+    } catch (\Throwable $e) {
+        $L = [];
+    }
+    if (isset($vars['_lang']) && is_array($vars['_lang'])) {
+        $L = array_merge($L, $vars['_lang']);
+    }
+
+    $chooserUrl = ExistingCustomer::chooserUrl();
+    $errorMessage = '';
+
+    // ---- Actions (POST + the client area's own CSRF token: the template
+    // posts WHMCS's {$token}, exactly as stock client-area forms do) ----
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_ec_action']) && $clientId > 0) {
+        try {
+            if (function_exists('check_token')) {
+                check_token();
+            }
+            $act = (string) $_POST['swz_ec_action'];
+            $r = ['action' => 'none'];
+            if ($act === 'open') {
+                $r = ExistingCustomer::launchService($clientId, (int) ($_POST['serviceid'] ?? 0), $token);
+            } elseif ($act === 'new') {
+                $r = ExistingCustomer::startNew($clientId, $token);
+            }
+            if (($r['action'] ?? '') === 'redirect') {
+                if (!empty($r['clear_token'])) {
+                    unset($_SESSION[PromptBox::SESSION_KEY]);
+                }
+                ExistingCustomer::redirect((string) $r['url']);
+            }
+            $errorMessage = (string) ($L['choose_error'] ?? 'That workspace could not be opened just now.');
+        } catch (\Throwable $e) {
+            $errorMessage = (string) ($L['choose_error'] ?? 'That workspace could not be opened just now.');
+        }
+    }
+
+    // ---- Listing ----
+    $workspaces = [];
+    $promptExcerpt = '';
+    try {
+        if ($clientId > 0) {
+            $list = ExistingCustomer::orderByPolicy(ExistingCustomer::eligibleServices($clientId), 'recent');
+            $launches = class_exists('\\WHMCS\\Module\\Server\\Swarmz\\Helpers')
+                ? \WHMCS\Module\Server\Swarmz\Helpers::lastLaunchMap(array_map(static function (array $s): int {
+                    return (int) $s['id'];
+                }, $list))
+                : [];
+            foreach ($list as $ws) {
+                $ws['regdate'] = substr((string) $ws['regdate'], 0, 10);
+                $ws['last_launch'] = isset($launches[(int) $ws['id']]) ? substr((string) $launches[(int) $ws['id']], 0, 10) : '';
+                unset($ws['tenant_id']);
+                $workspaces[] = $ws;
+            }
+        }
+        if ($token !== '') {
+            $intent = PromptBox::findIntent($token);
+            if ($intent && empty($intent->used_at)) {
+                $p = trim((string) $intent->prompt);
+                $promptExcerpt = function_exists('mb_substr')
+                    ? (mb_substr($p, 0, 160) . (mb_strlen($p) > 160 ? '…' : ''))
+                    : (substr($p, 0, 160) . (strlen($p) > 160 ? '…' : ''));
+            }
+        }
+    } catch (\Throwable $e) {
+        // render whatever we have
+    }
+
+    $editorLabel = class_exists('\\WHMCS\\Module\\Server\\Swarmz\\Helpers')
+        ? \WHMCS\Module\Server\Swarmz\Helpers::editorButtonLabel()
+        : 'Open AI Editor';
+
+    $title = (string) ($L['choose_title'] ?? 'Where should we build this?');
+    return [
+        'pagetitle'    => $title,
+        'breadcrumb'   => ['index.php?m=swarmz&a=choose' => $title],
+        'templatefile' => 'templates/choose',
+        'requirelogin' => true,
+        'forcessl'     => false,
+        'vars'         => [
+            'L'                 => $L,
+            'workspaces'        => $workspaces,
+            'promptExcerpt'     => $promptExcerpt,
+            'chooserUrl'        => $chooserUrl,
+            'editorButtonLabel' => $editorLabel,
+            'errorMessage'      => $errorMessage,
+        ],
+    ];
 }
