@@ -5,6 +5,59 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.26.0] - 2026-10-08
+
+### Added
+- **Existing customers keep their prompt.** A visitor who types a prompt into
+  the storefront Prompt Box but already has an account used to be sent to
+  the plain login page, and the prompt was lost. The widget's "Already have
+  an account? Log in" link and its "Log in" step now store the prompt
+  (`promptbox.php?a=login` — same validation, rate limit and product
+  allow-list as the cart flow) and carry it through the WHMCS login. Once
+  the customer is signed in, the module routes the prompt into a workspace
+  they own and opens the editor with it already building:
+  - **Which workspace** is the new console setting **Existing Customer
+    Workspace** (Reseller Console → Prompt Box → *Existing customers*):
+    *Most recently opened* (default — the module now records every editor
+    launch), *Newest*, *Oldest*, or *Ask the customer* (a small, unbranded
+    client-area page listing their workspaces with a "Build it here" button
+    each, plus "Start a new workspace").
+  - Workspaces with **no credits left** are skipped automatically when the
+    customer has two to five; a workspace the platform reports as
+    suspended or terminated falls through to the next one.
+  - **No usable workspace?** The new **Starter Product** setting names the
+    Swarmz product such a customer is set up on. A *free* starter is ordered
+    and activated on the spot with the prompt attached, then the editor
+    opens; a paid starter — or "Send to cart" — lands them in the cart with
+    the product preselected and the prompt riding along.
+  - Headless integrations get `SwarmzPromptBox.login({prompt, pid})`, which
+    resolves with the login URL to send the browser to.
+- **Open the editor after checkout** (default on). When a classic-cart
+  order activates instantly (free products), the customer no longer stops
+  on the order-complete page to click the launch button — the editor opens
+  straight away with their prompt building. Switch it off on the same
+  console card.
+- **Diagnostics.** The Prompt Box page gains a *Recent existing-customer
+  logins* table (time, client, workspace, outcome, detail) next to the
+  express-signup log.
+
+### Changed
+- The platform-sso mint for a signed-in customer's prompt carries one extra
+  field, `initial_prompt` (a platform-side feature shipped alongside this
+  release; older platform deployments ignore it and the customer simply
+  lands in the editor without the auto-start).
+
+### Notes
+- Two small module-owned tables are added (`mod_swarmz_launches`,
+  `mod_swarmz_existing_logins`), created on activation/upgrade and lazily
+  on first use; nothing existing is altered. No settings change meaning;
+  the embedded Prompt Box snippet does not need to be updated — the widget
+  script picks the new behaviour up on its next load.
+- Hooks stay best-effort: every new routing step runs only on a plain GET
+  page load by a signed-in client, never inside the cart or on AJAX
+  requests, at most three attempts per prompt per session, and any failure
+  leaves the page exactly as it was.
+
 ## [1.25.1] - 2026-08-22
 
 ### Fixed
