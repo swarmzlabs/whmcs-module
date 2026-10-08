@@ -393,7 +393,7 @@ class ExpressSignup
      * Returns 0 only when all four miss — the caller never treats that as a
      * hard failure (see execute()).
      */
-    private static function resolveServiceId(array $orderResp, int $orderId, int $clientId, int $pid): int
+    public static function resolveServiceId(array $orderResp, int $orderId, int $clientId, int $pid): int
     {
         if (!empty($orderResp['productids'])) {
             $ids = array_values(array_filter(array_map('intval', explode(',', (string) $orderResp['productids']))));
@@ -495,8 +495,60 @@ class ExpressSignup
         return $stripped === null || trim($stripped) === '';
     }
 
+    /**
+     * True when ordering $pid on the cycle resolveBillingCycle() picks costs
+     * nothing (v1.26.0, the Starter Product gate): a Free-paytype product, or
+     * a recurring one whose monthly price AND setup fee are 0.00 in the
+     * client's currency (default currency when the client has none). One-time
+     * products are an upfront charge and are never "free" here. Any read
+     * failure → false, so a paid product can never be auto-ordered.
+     */
+    public static function isFreeProduct(int $pid, int $clientId = 0): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+        try {
+            $row = Capsule::table('tblproducts')->where('id', $pid)->first(['paytype']);
+            if (!$row) {
+                return false;
+            }
+            $paytype = strtolower(trim((string) ($row->paytype ?? '')));
+            if ($paytype === 'free') {
+                return true;
+            }
+            if ($paytype !== 'recurring') {
+                return false;
+            }
+            $currencyId = 0;
+            if ($clientId > 0) {
+                $client = Capsule::table('tblclients')->where('id', $clientId)->first(['currency']);
+                $currencyId = $client ? (int) $client->currency : 0;
+            }
+            if ($currencyId <= 0) {
+                $def = Capsule::table('tblcurrencies')->where('default', 1)->first(['id']);
+                $currencyId = $def ? (int) $def->id : 0;
+            }
+            $pricing = $currencyId > 0
+                ? Capsule::table('tblpricing')->where('type', 'product')->where('relid', $pid)->where('currency', $currencyId)->first()
+                : null;
+            if (!$pricing) {
+                $pricing = Capsule::table('tblpricing')->where('type', 'product')->where('relid', $pid)->first();
+            }
+            if (!$pricing || !isset($pricing->monthly) || !is_numeric($pricing->monthly)) {
+                return false;
+            }
+            // -1 = cycle disabled; anything above 0.00 is a charge.
+            $monthly = (float) $pricing->monthly;
+            $setup = isset($pricing->msetupfee) && is_numeric($pricing->msetupfee) ? (float) $pricing->msetupfee : 0.0;
+            return $monthly == 0.0 && $setup <= 0.0;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /** 'free' when the product's own paytype is free; 'monthly' otherwise. */
-    private static function resolveBillingCycle(int $pid): string
+    public static function resolveBillingCycle(int $pid): string
     {
         try {
             $row = Capsule::table('tblproducts')->where('id', $pid)->first(['paytype']);
@@ -513,7 +565,7 @@ class ExpressSignup
      * no existing service/client to read a preferred gateway from here, so
      * this is the only source.
      */
-    private static function resolvePaymentMethod(): string
+    public static function resolvePaymentMethod(): string
     {
         try {
             // Prefer an OFFLINE gateway when one is active: the express order
@@ -615,35 +667,46 @@ class ExpressSignup
     }
 
     /**
+     * The production localAPI() boundary: a callable(string $action, array
+     * $params): array that converts a THROWING localAPI() into an error
+     * return. Shared with the existing-customer resolver (v1.26.0), which
+     * places the same AddOrder/AcceptOrder calls for a signed-in client.
+     */
+    public static function localApiBoundary(): callable
+    {
+        return static function (string $action, array $params): array {
+            if (!function_exists('localAPI')) {
+                return ['result' => 'error', 'message' => 'localAPI unavailable'];
+            }
+            try {
+                $result = localAPI($action, $params);
+            } catch (\Throwable $e) {
+                // Production WHMCS installs run third-party hooks and
+                // gateway modules INSIDE core API calls (AddOrder,
+                // AcceptOrder run order/fraud/gateway hooks). One of them
+                // throwing — seen in the wild: a legacy fsockopen+fwrite
+                // gateway — must degrade to an error *return*, never
+                // abort the whole signup as a fatal. thrown_at names the
+                // culprit file so the host can identify the module.
+                return [
+                    'result'    => 'error',
+                    'message'   => 'localAPI ' . $action . ' threw: ' . $e->getMessage(),
+                    'thrown'    => true,
+                    'thrown_at' => $e->getFile() . ':' . $e->getLine(),
+                ];
+            }
+            return is_array($result) ? $result : ['result' => 'error', 'message' => 'unexpected localAPI response'];
+        };
+    }
+
+    /**
      * Real-world implementations of the two injectable boundaries, used
      * whenever $ctx doesn't override them (i.e. always, in production).
      */
     private static function defaultContext(): array
     {
         return [
-            'localApi' => static function (string $action, array $params): array {
-                if (!function_exists('localAPI')) {
-                    return ['result' => 'error', 'message' => 'localAPI unavailable'];
-                }
-                try {
-                    $result = localAPI($action, $params);
-                } catch (\Throwable $e) {
-                    // Production WHMCS installs run third-party hooks and
-                    // gateway modules INSIDE core API calls (AddOrder,
-                    // AcceptOrder run order/fraud/gateway hooks). One of them
-                    // throwing — seen in the wild: a legacy fsockopen+fwrite
-                    // gateway — must degrade to an error *return*, never
-                    // abort the whole signup as a fatal. thrown_at names the
-                    // culprit file so the host can identify the module.
-                    return [
-                        'result'    => 'error',
-                        'message'   => 'localAPI ' . $action . ' threw: ' . $e->getMessage(),
-                        'thrown'    => true,
-                        'thrown_at' => $e->getFile() . ':' . $e->getLine(),
-                    ];
-                }
-                return is_array($result) ? $result : ['result' => 'error', 'message' => 'unexpected localAPI response'];
-            },
+            'localApi' => self::localApiBoundary(),
             'sso' => static function (string $externalRef): ?string {
                 if (!class_exists('\\WHMCS\\Module\\Server\\Swarmz\\Api')
                     || !class_exists('\\WHMCS\\Module\\Server\\Swarmz\\Helpers')
