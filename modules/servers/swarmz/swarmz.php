@@ -430,7 +430,13 @@ function swarmz_ChangePackage(array $params)
  */
 function swarmz_ServiceSingleSignOn(array $params)
 {
-    return _swarmz_doSso($params);
+    $result = _swarmz_doSso($params);
+    if (!empty($result['success'])) {
+        // v1.26.0: remember this as the customer's most recently opened
+        // workspace (feeds the "recent" existing-customer policy). Best-effort.
+        Helpers::recordLaunch((int) ($params['serviceid'] ?? 0));
+    }
+    return $result;
 }
 
 /**
@@ -622,6 +628,8 @@ function swarmz_launch(array $params)
     $result = _swarmz_doSso($params);
 
     if (!empty($result['success']) && !empty($result['redirectTo'])) {
+        // v1.26.0: launch recency for the "recent" existing-customer policy.
+        Helpers::recordLaunch((int) ($params['serviceid'] ?? 0));
         _swarmz_redirect((string) $result['redirectTo']);
         // _swarmz_redirect exits; the line below is unreachable in WHMCS and
         // only there for the CLI/test harness where headers are a no-op.
