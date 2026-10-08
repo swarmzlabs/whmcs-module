@@ -32,3 +32,4 @@ jobs:
           php test/client-dir.php
           php test/console-token.php
           php test/express-harness.php
+          php test/existing-customer-harness.php
