@@ -629,6 +629,47 @@ class Helpers
     }
 
     /**
+     * Valid "Existing Customer Workspace" policies (v1.26.0) — how a signed-in
+     * customer's storefront prompt picks the workspace it builds in. First
+     * entry is the default.
+     *
+     *   recent  the workspace most recently opened in the editor (per the
+     *           mod_swarmz_launches table); never-launched ones sort last.
+     *   newest  the most recently registered active service.
+     *   oldest  the longest-standing active service.
+     *   ask     show the customer a chooser page instead of deciding.
+     */
+    const EXISTING_CUSTOMER_POLICIES = ['recent', 'newest', 'oldest', 'ask'];
+
+    /** The host's existing-customer workspace policy; unknown values → recent. */
+    public static function existingCustomerPolicy(): string
+    {
+        $v = strtolower(trim((string) self::addonSetting('Existing Customer Workspace', 'recent')));
+        return in_array($v, self::EXISTING_CUSTOMER_POLICIES, true) ? $v : 'recent';
+    }
+
+    /**
+     * The "Starter Product" (v1.26.0): the Swarmz product a signed-in customer
+     * with no usable workspace is set up on when their prompt arrives. 0 when
+     * unset (or unusable), meaning "send them to the cart instead".
+     */
+    public static function starterProductId(): int
+    {
+        $n = filter_var(self::addonSetting('Starter Product', 0), FILTER_VALIDATE_INT);
+        return ($n === false || $n <= 0) ? 0 : (int) $n;
+    }
+
+    /**
+     * Whether a customer whose classic-cart order provisions instantly is
+     * sent straight into the editor from the order-complete page (v1.26.0).
+     * DEFAULT ON; a host can switch it off on the console's Prompt Box page.
+     */
+    public static function openEditorAfterCheckout(): bool
+    {
+        return self::addonBool('Open Editor After Checkout', true);
+    }
+
+    /**
      * The accent color for the client area, as a validated hex string ('' =
      * let the theme use its own default). Resolution order:
      *   1. Accent Color (a custom #hex the host typed) — always wins.
@@ -1000,6 +1041,108 @@ class Helpers
             return '';
         } catch (\Throwable $e) {
             return '';
+        }
+    }
+
+    /**
+     * Build an Api client for one service without a $params bag (hooks, the
+     * addon's existing-customer resolver): the service's own server Password
+     * first, then the Reseller Console key — the same resolution every other
+     * out-of-lifecycle call (credit-pack grants, admin SSO) uses. Throws the
+     * same actionable error makeApiClient() does when no key is configured.
+     */
+    public static function makeApiClientForService(int $serviceId): Api
+    {
+        $key = self::resolveServiceServerKey($serviceId);
+        if ($key === '') {
+            $key = trim((string) self::addonSetting('API Key', ''));
+        }
+        if ($key === '') {
+            throw new SwarmzTransportException(
+                'No Swarmz API key configured. Paste your sk_live_… key into the '
+                . 'server\'s Password field (Setup → Products/Services → Servers), '
+                . 'or set it in the Swarmz Reseller Console addon.'
+            );
+        }
+        $baseUrl = trim((string) self::addonSetting('API Base URL', ''));
+        $baseUrl = $baseUrl !== '' ? rtrim($baseUrl, '/') : self::DEFAULT_API_BASE_URL;
+        return new Api($key, $baseUrl);
+    }
+
+    // ---------------- Editor launches (v1.26.0) ----------------
+    //
+    // One row per service: when its editor was last opened by the customer
+    // (the client-area launcher / WHMCS SSO button, and the addon's
+    // existing-customer resolver). Read by the "recent" workspace policy so
+    // a returning customer's storefront prompt lands in the workspace they
+    // actually work in. Tiny, best-effort, additive — a write failure never
+    // fails a launch.
+
+    /** Launch-recency table (WHMCS convention: mod_<module>_…). */
+    const LAUNCHES_TABLE = 'mod_swarmz_launches';
+
+    /**
+     * Create the launches table if missing. Idempotent and additive (guarded
+     * by hasTable; never recreates or alters). Called from the addon's
+     * activate/upgrade and lazily before every write.
+     */
+    public static function ensureLaunchesSchema(): void
+    {
+        try {
+            $schema = Capsule::schema();
+            if (!$schema->hasTable(self::LAUNCHES_TABLE)) {
+                $schema->create(self::LAUNCHES_TABLE, function ($table) {
+                    $table->unsignedInteger('serviceid')->primary();
+                    $table->dateTime('last_launch_at');
+                });
+            }
+        } catch (\Throwable $e) {
+            // Schema plumbing is best-effort — a failure surfaces on first use.
+        }
+    }
+
+    /** Upsert "service $serviceId was launched now". Never throws. */
+    public static function recordLaunch(int $serviceId): void
+    {
+        if ($serviceId <= 0) {
+            return;
+        }
+        try {
+            self::ensureLaunchesSchema();
+            Capsule::table(self::LAUNCHES_TABLE)->updateOrInsert(
+                ['serviceid' => $serviceId],
+                ['last_launch_at' => date('Y-m-d H:i:s')]
+            );
+        } catch (\Throwable $e) {
+            // best-effort — a launch must never fail over its own bookkeeping
+        }
+    }
+
+    /**
+     * serviceid => last_launch_at ("Y-m-d H:i:s") for the given services;
+     * services never launched are absent. Empty on any read failure.
+     *
+     * @param int[] $serviceIds
+     * @return array<int,string>
+     */
+    public static function lastLaunchMap(array $serviceIds): array
+    {
+        $ids = array_values(array_filter(array_map('intval', $serviceIds)));
+        if (empty($ids)) {
+            return [];
+        }
+        try {
+            if (!Capsule::schema()->hasTable(self::LAUNCHES_TABLE)) {
+                return [];
+            }
+            $out = [];
+            $rows = Capsule::table(self::LAUNCHES_TABLE)->whereIn('serviceid', $ids)->get(['serviceid', 'last_launch_at']);
+            foreach ($rows as $r) {
+                $out[(int) $r->serviceid] = (string) $r->last_launch_at;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
         }
     }
 

@@ -555,6 +555,7 @@ class Console
             . 'opens on their very first login with that app <strong>already building</strong>.</p>';
 
         $out .= $this->renderExpressSignupCard();
+        $out .= $this->renderExistingCustomersCard();
 
         $products = PromptBox::swarmzProducts();
         $visible = array_values(array_filter($products, function ($p) {
@@ -696,8 +697,150 @@ class Console
         }
 
         $out .= $this->renderExpressAttempts();
+        $out .= $this->renderExistingLogins();
 
         return $out;
+    }
+
+    /**
+     * "Existing customers" card (v1.26.0) — what happens to a storefront
+     * prompt when the visitor already has an account: which of their
+     * workspaces it builds in (policy), what a customer with no usable
+     * workspace is set up on (Starter Product), and whether a classic-cart
+     * order that provisions instantly opens the editor from the
+     * order-complete page. Same save pattern as the express card.
+     */
+    private function renderExistingCustomersCard(): string
+    {
+        $saved = '';
+        $products = PromptBox::swarmzProducts();
+        $productIds = [];
+        foreach ($products as $p) {
+            $productIds[] = (int) $p['pid'];
+        }
+
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['swz_ec_save'])) {
+            if (function_exists('check_token')) {
+                check_token('WHMCS.admin.default');
+            }
+            $policyIn = strtolower(trim((string) ($_POST['swz_ec_policy'] ?? 'recent')));
+            if (!in_array($policyIn, \WHMCS\Module\Server\Swarmz\Helpers::EXISTING_CUSTOMER_POLICIES, true)) {
+                $policyIn = 'recent';
+            }
+            // Only a swarmz-module product may be the starter; anything else
+            // (or "Send to cart") stores '' = none.
+            $starterIn = filter_var($_POST['swz_ec_starter'] ?? '', FILTER_VALIDATE_INT);
+            $starterIn = ($starterIn !== false && in_array((int) $starterIn, $productIds, true)) ? (string) (int) $starterIn : '';
+            $openIn = !empty($_POST['swz_ec_open_after_checkout']) ? 'on' : 'off';
+            $this->saveAddonSetting('Existing Customer Workspace', $policyIn);
+            $this->saveAddonSetting('Starter Product', $starterIn);
+            $this->saveAddonSetting('Open Editor After Checkout', $openIn);
+            $saved = $this->notice('success', 'Saved. Applies to the next customer who signs in with a prompt.');
+        }
+
+        $policy = \WHMCS\Module\Server\Swarmz\Helpers::existingCustomerPolicy();
+        $starter = \WHMCS\Module\Server\Swarmz\Helpers::starterProductId();
+        $openAfter = \WHMCS\Module\Server\Swarmz\Helpers::openEditorAfterCheckout();
+        $token = $this->adminFormToken();
+
+        $policies = [
+            'recent' => ['Most recently opened', 'The workspace the customer last launched into the editor. New installs: launches are recorded from this version on; never-opened workspaces fall back to the newest. Recommended.'],
+            'newest' => ['Newest workspace', 'The most recently ordered active workspace.'],
+            'oldest' => ['Oldest workspace', 'The customer&rsquo;s longest-standing active workspace.'],
+            'ask'    => ['Ask the customer', 'Show a small page listing their workspaces with a &ldquo;Build it here&rdquo; button each, plus &ldquo;Start a new workspace&rdquo;.'],
+        ];
+        $policyOptions = '';
+        foreach ($policies as $key => $info) {
+            $policyOptions .= '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;margin:0 0 8px;">'
+                . '<input type="radio" name="swz_ec_policy" value="' . $this->esc($key) . '" style="margin-top:3px;"' . ($key === $policy ? ' checked' : '') . ' />'
+                . '<span><strong>' . $info[0] . '</strong><br><span class="swz-muted">' . $info[1] . '</span></span>'
+                . '</label>';
+        }
+
+        $starterOptions = '<option value=""' . ($starter <= 0 ? ' selected' : '') . '>Send to cart (no starter product)</option>';
+        foreach ($products as $p) {
+            $pid = (int) $p['pid'];
+            $starterOptions .= '<option value="' . $pid . '"' . ($pid === $starter ? ' selected' : '') . '>'
+                . $this->esc($p['name']) . ' [#' . $pid . ']' . (!empty($p['hidden']) ? ' (hidden)' : '') . '</option>';
+        }
+
+        $out = '<div class="swz-section"><h3 class="swz-section-title">Existing customers</h3>';
+        $out .= '<p class="swz-section-sub">When a visitor who already has an account types a prompt, the widget sends them to '
+            . 'log in <strong>with the prompt</strong>. After login it is routed into a workspace they own &mdash; '
+            . 'the prompt is never lost in the client area.</p>';
+        $out .= $saved;
+        $out .= '<form method="post" action="' . $this->esc($this->link(['swarmz_action' => 'promptbox'])) . '">'
+            . $token
+            . '<input type="hidden" name="swz_ec_save" value="1" />'
+            . '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px 34px;max-width:860px;">'
+            . '<div><div class="swz-strong" style="margin-bottom:8px;">Which workspace builds the prompt?</div>' . $policyOptions
+            . '<p class="swz-muted" style="margin:4px 0 0;">Workspaces with no credits left are skipped automatically (when the customer has 2&ndash;5).</p></div>'
+            . '<div><label style="display:block;font-size:12px;color:#6b7280;">Starter product &mdash; for customers with no active workspace<br>'
+            . '<select name="swz_ec_starter" style="width:100%;margin-top:4px;padding:6px;border:1px solid #d1d5db;border-radius:6px;">' . $starterOptions . '</select></label>'
+            . '<p class="swz-muted" style="margin:6px 0 14px;">A <strong>free</strong> starter is ordered and activated for them on the spot, the prompt attached, and the editor opens. '
+            . 'A paid starter &mdash; or &ldquo;Send to cart&rdquo; &mdash; lands them in the cart with the product preselected and the prompt riding along (the plan they picked in the widget when no starter is set).</p>'
+            . '<label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;">'
+            . '<input type="checkbox" name="swz_ec_open_after_checkout" value="1" style="margin-top:2px;"' . ($openAfter ? ' checked' : '') . ' />'
+            . '<span><strong>Open the editor after checkout.</strong> <span class="swz-muted">When a classic-cart order activates instantly (free products), skip the &ldquo;order complete&rdquo; page and open the workspace with the prompt already building.</span></span>'
+            . '</label></div>'
+            . '</div>'
+            . '<div style="margin-top:14px;"><button type="submit" class="swz-save">Save</button></div>'
+            . '</form>';
+        $out .= '</div>';
+        return $out;
+    }
+
+    /**
+     * "Recent existing-customer logins" diagnostics (v1.26.0): the last ~20
+     * times a signed-in customer arrived with a prompt and what the resolver
+     * did with it — opened an existing workspace, set up a starter, sent to
+     * the cart, showed the chooser, or failed (and why, in the note).
+     */
+    private function renderExistingLogins(): string
+    {
+        $out = '<h3 class="swz-section-title">Recent existing-customer logins</h3>';
+        $out .= '<p class="swz-lede">Customers who signed in with a prompt (and classic-cart orders that opened the editor '
+            . 'from checkout), newest first &mdash; what each one was routed to.</p>';
+
+        $rows = [];
+        try {
+            if (is_file(__DIR__ . '/ExistingCustomer.php')) {
+                require_once __DIR__ . '/ExistingCustomer.php';
+                $rows = ExistingCustomer::recentLogins(20);
+            }
+        } catch (\Throwable $e) {
+            $rows = [];
+        }
+        if (empty($rows)) {
+            return $out . '<p class="swz-muted">None yet &mdash; they will show up here as existing customers sign in with a prompt.</p>';
+        }
+
+        $labels = [
+            'opened'          => ['Opened workspace', 'swz-badge-ok'],
+            'new_workspace'   => ['New workspace', 'swz-badge-ok'],
+            'checkout_open'   => ['Opened after checkout', 'swz-badge-ok'],
+            'cart'            => ['Sent to cart', 'swz-badge-info'],
+            'chooser'         => ['Asked to choose', 'swz-badge-neutral'],
+            'failed'          => ['Failed', 'swz-badge-bad'],
+            'checkout_failed' => ['Failed', 'swz-badge-bad'],
+        ];
+        $body = '';
+        foreach ($rows as $r) {
+            $outcome = (string) ($r->outcome ?? '');
+            $lab = $labels[$outcome] ?? [$outcome !== '' ? $outcome : 'Unknown', 'swz-badge-neutral'];
+            $clientId = (int) ($r->client_id ?? 0);
+            $serviceId = (int) ($r->service_id ?? 0);
+            $body .= '<tr>'
+                . '<td>' . $this->esc((string) ($r->created_at ?? '')) . '</td>'
+                . '<td>' . ($clientId > 0 ? '<a href="clientssummary.php?userid=' . $clientId . '">#' . $clientId . '</a>' : '<span class="swz-muted">&mdash;</span>') . '</td>'
+                . '<td>' . ($serviceId > 0 ? '<a href="clientsservices.php?id=' . $serviceId . '">#' . $serviceId . '</a>' : '<span class="swz-muted">&mdash;</span>') . '</td>'
+                . '<td><span class="swz-badge ' . $lab[1] . '">' . $this->esc($lab[0]) . '</span></td>'
+                . '<td class="swz-muted">' . $this->esc((string) ($r->note ?? '')) . '</td>'
+                . '</tr>';
+        }
+        return $out . '<div class="swz-tablewrap"><table class="swz-table"><thead><tr>'
+            . '<th>Time</th><th>Client</th><th>Workspace</th><th>Outcome</th><th>Detail</th>'
+            . '</tr></thead><tbody>' . $body . '</tbody></table></div>';
     }
 
     /**

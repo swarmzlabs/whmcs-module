@@ -47,6 +47,14 @@ class PromptBox
     /** PHP session key holding the visitor's intent token through checkout. */
     const SESSION_KEY = 'swarmz_prompt_token';
 
+    /**
+     * PHP session key holding the service id the session's intent was bound
+     * to during checkout (v1.26.0). The checkout binders clear SESSION_KEY the
+     * moment they bind, so the order-complete page needs this to know which
+     * just-provisioned workspace to open (see hooks.php / ExistingCustomer).
+     */
+    const SESSION_SERVICE_KEY = 'swarmz_prompt_service';
+
     /** Hard cap on stored prompt length (matches the platform API's cap). */
     const PROMPT_MAX_CHARS = 10000;
 
@@ -294,12 +302,80 @@ class PromptBox
     }
 
     /**
-     * The cart URL the widget redirects to after storing an intent.
+     * The cart URL the widget redirects to after storing an intent. With an
+     * empty $token (v1.26.0: the chooser's "start a new workspace" without a
+     * pending prompt) the product is simply preselected.
      */
     public static function cartUrl(int $pid, string $token): string
     {
-        return rtrim(self::systemUrl(), '/')
-            . '/cart.php?a=add&pid=' . $pid . '&' . self::CART_PARAM . '=' . rawurlencode($token);
+        $url = rtrim(self::systemUrl(), '/') . '/cart.php?a=add&pid=' . $pid;
+        if ($token !== '') {
+            $url .= '&' . self::CART_PARAM . '=' . rawurlencode($token);
+        }
+        return $url;
+    }
+
+    /**
+     * The WHMCS login URL the widget sends a returning customer to (v1.26.0),
+     * carrying the intent token in BOTH forms the module recovers it from
+     * after login: `swzp` on the login page itself (captured into the session
+     * by the ClientAreaPage hook while the login form renders) and inside
+     * `goto` (WHMCS's post-login destination), so `clientarea.php?swzp=…`
+     * re-captures it even on an install where the login page bypasses hooks.
+     */
+    public static function loginUrl(string $token): string
+    {
+        $base = rtrim(self::systemUrl(), '/');
+        $goto = 'clientarea.php?' . self::CART_PARAM . '=' . rawurlencode($token);
+        return $base . '/index.php?rp=/login&' . self::CART_PARAM . '=' . rawurlencode($token)
+            . '&goto=' . rawurlencode($goto);
+    }
+
+    /**
+     * The stored intent for a token (id, token, prompt, pid, service_id,
+     * used_at, created_at), or null when unknown / storage unavailable.
+     */
+    public static function findIntent(string $token): ?\stdClass
+    {
+        if ($token === '' || !self::schemaReady()) {
+            return null;
+        }
+        try {
+            $row = Capsule::table(self::TABLE)
+                ->where('token', $token)
+                ->first(['id', 'token', 'prompt', 'pid', 'service_id', 'used_at', 'created_at']);
+            return $row ? $row : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Mark a token's intent consumed by $serviceId (v1.26.0): bound to it if
+     * not already bound (first bind wins, as bindToService), and used. The
+     * existing-customer resolver calls this once the prompt has reached the
+     * platform on an SSO mint, so no later page load can re-send it.
+     */
+    public static function consumeToken(string $token, int $serviceId): void
+    {
+        if ($token === '' || $serviceId <= 0 || !self::schemaReady()) {
+            return;
+        }
+        try {
+            $row = Capsule::table(self::TABLE)->where('token', $token)->first(['id', 'service_id', 'bound_at']);
+            if (!$row) {
+                return;
+            }
+            $now = date('Y-m-d H:i:s');
+            $data = ['used_at' => $now];
+            if (empty($row->service_id)) {
+                $data['service_id'] = $serviceId;
+                $data['bound_at'] = $now;
+            }
+            Capsule::table(self::TABLE)->where('id', $row->id)->update($data);
+        } catch (\Throwable $e) {
+            // best-effort
+        }
     }
 
     /**

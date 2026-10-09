@@ -10,6 +10,11 @@
  *                     creates the WHMCS client + a $0 order from just an
  *                     email + password and returns a redirect straight into
  *                     the builder. See lib/ExpressSignup.php.
+ *   POST ?a=login   → (v1.26.0) a returning customer: stores the prompt as an
+ *                     intent exactly like a=intent and returns the WHMCS
+ *                     login URL carrying the token, so the prompt survives
+ *                     the login and is routed into a workspace the customer
+ *                     owns by the ClientAreaPage hook (lib/ExistingCustomer.php).
  *
  * This file is the ONLY public surface of the prompt-box feature. It boots
  * WHMCS (for DB + SystemURL) but requires no authentication: the stored
@@ -57,7 +62,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
 
 $action = isset($_GET['a']) ? (string) $_GET['a'] : 'js';
 
-if ($action === 'intent') {
+// a=intent (cart) and a=login (returning customer) share everything but the
+// redirect they answer with: same body shape {prompt, pid}, same validation,
+// per-IP rate limit, size cap, product allow-list and intent storage.
+if ($action === 'intent' || $action === 'login') {
     header('Content-Type: application/json');
     if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
         http_response_code(405);
@@ -82,7 +90,9 @@ if ($action === 'intent') {
     echo json_encode([
         'ok'       => true,
         'token'    => $tokenOrError,
-        'redirect' => PromptBox::cartUrl($pid, $tokenOrError),
+        'redirect' => $action === 'login'
+            ? PromptBox::loginUrl($tokenOrError)
+            : PromptBox::cartUrl($pid, $tokenOrError),
     ], JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -154,6 +164,10 @@ $expressEndpointJson = json_encode($expressEndpoint, JSON_UNESCAPED_SLASHES);
 // WHMCS 8's client login route; works whether or not pretty URLs are on.
 $loginUrl = rtrim(PromptBox::systemUrl(), '/') . '/index.php?rp=/login';
 $loginUrlJson = json_encode($loginUrl, JSON_UNESCAPED_SLASHES);
+// v1.26.0: the returning-customer endpoint — stores the typed prompt and
+// answers with a login URL that carries it (see a=login above).
+$loginEndpoint = rtrim(PromptBox::systemUrl(), '/') . '/modules/addons/swarmz/promptbox.php?a=login';
+$loginEndpointJson = json_encode($loginEndpoint, JSON_UNESCAPED_SLASHES);
 // Minimum password length (console setting), mirrored into the widget for
 // instant client-side feedback. The server (ExpressSignup) stays authoritative.
 $minPassword = class_exists('\\WHMCS\\Module\\Server\\Swarmz\\Helpers')
@@ -198,10 +212,22 @@ echo <<<JS
  *     box but NO built-in popup — build your own sign-up UI and drive it via
  *     window.SwarmzPromptBox:
  *        SwarmzPromptBox.submit({prompt,email,password,tos}) -> Promise<{ok,redirect?,error?}>
+ *        SwarmzPromptBox.login({prompt,pid})  -> Promise<{ok,redirect?,error?}>
+ *            // RETURNING CUSTOMERS keep their prompt: stores the prompt and
+ *            // resolves with the WHMCS login URL that carries it — send the
+ *            // browser there (window.location.href = redirect). After login
+ *            // the module routes the prompt into a workspace the customer
+ *            // already owns (or sets up a new one, per the host's console
+ *            // settings). With an empty prompt it resolves with the plain
+ *            // login URL. pid defaults to the widget's product.
  *        SwarmzPromptBox.on("prompt", fn)  // fn({prompt,pid}) when a prompt is submitted
  *        SwarmzPromptBox.on("result", fn)  // fn({ok,redirect?,error?}) after submit()
  *     The script's host element also dispatches CustomEvents "swarmz:prompt"
  *     and "swarmz:express-result" with the same detail payloads.
+ *
+ * The built-in popup's "Already have an account? Log in" link and its
+ * "Log in" button (shown when the email already has an account) use the
+ * same login() call, so a returning customer's typed prompt is never lost.
  */
 (function () {
   "use strict";
@@ -212,6 +238,7 @@ echo <<<JS
   var EXPRESS_ENDPOINT = {$expressEndpointJson};
   var TOS_URL = {$tosUrlJson};
   var LOGIN_URL = {$loginUrlJson};
+  var LOGIN_ENDPOINT = {$loginEndpointJson};
   var MIN_PASSWORD = {$minPasswordJson};
 
   function attr(name, dflt) { var v = script.getAttribute(name); return (v === null || v === "") ? dflt : v; }
@@ -293,8 +320,30 @@ echo <<<JS
       }));
     });
   }
+  // Returning customer: store the prompt and resolve with the login URL that
+  // carries it. An empty prompt (or any failure) resolves with the plain
+  // login URL — the customer can always sign in, prompt or not.
+  function apiLogin(data) {
+    data = data || {};
+    var prompt = (typeof data.prompt === "string" ? data.prompt : "").trim();
+    return new Promise(function (resolve) {
+      if (!prompt) { resolve({ ok: true, redirect: LOGIN_URL }); return; }
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", LOGIN_ENDPOINT, true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.onload = function () {
+        var body = null;
+        try { body = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status >= 200 && xhr.status < 300 && body && body.ok && body.redirect) resolve({ ok: true, redirect: body.redirect });
+        else resolve({ ok: false, error: (body && body.error) || "request_failed", redirect: LOGIN_URL });
+      };
+      xhr.onerror = function () { resolve({ ok: false, error: "network_error", redirect: LOGIN_URL }); };
+      xhr.send(JSON.stringify({ prompt: prompt, pid: parseInt(data.pid, 10) || cfg.pid }));
+    });
+  }
   window.SwarmzPromptBox = window.SwarmzPromptBox || {
     submit: apiSubmit,
+    login: apiLogin,
     on: function (evt, cb) { if (listeners[evt] && typeof cb === "function") listeners[evt].push(cb); return this; },
     open: function () {} // replaced with the real opener below when a modal exists
   };
@@ -535,6 +584,20 @@ echo <<<JS
       var loginLink = document.createElement("a");
       loginLink.href = LOGIN_URL; loginLink.className = "spb-login-link"; loginLink.textContent = cfg.loginText;
       foot.appendChild(loginLink);
+      // Returning customer → sign in WITH the typed prompt (a=login); the
+      // prompt is routed into their own workspace after login. An empty
+      // prompt goes to the plain login page, as before.
+      var loginBusy = false;
+      function goLogin() {
+        if (loginBusy) return;
+        loginBusy = true;
+        var p = field.value.trim();
+        if (loginMode) { submitBtn.disabled = true; submitLabel.textContent = "Taking you to sign in\\u2026"; }
+        apiLogin({ prompt: p, pid: selectedPid }).then(function (res) {
+          window.location.href = (res && res.redirect) ? res.redirect : LOGIN_URL;
+        });
+      }
+      loginLink.addEventListener("click", function (ev) { ev.preventDefault(); goLogin(); });
       var checkoutLink = document.createElement("a");
       checkoutLink.href = "#"; checkoutLink.className = "spb-checkout-link"; checkoutLink.textContent = "Prefer the regular checkout?";
       foot.appendChild(checkoutLink);
@@ -594,7 +657,7 @@ echo <<<JS
       };
 
       function submitExpress() {
-        if (loginMode) { window.location.href = LOGIN_URL; return; }
+        if (loginMode) { goLogin(); return; }
         var email = emailField.value.trim();
         var password = passField.value;
         if (!email) { emailField.focus(); return; }

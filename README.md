@@ -95,7 +95,27 @@ Console's **Prompt Box** view:
 Add `data-plans='[{"pid":12,"label":"Starter","price":"$9/mo"},{"pid":13,"label":"Pro","price":"$29/mo"}]'`
 to offer several plans inline; point different entries at different WHMCS
 products. A `$0.00` product with instant activation gives the "type a prompt →
-free instance spins up building it" flow end-to-end.
+free instance spins up building it" flow end-to-end — and with **Open the
+editor after checkout** (on by default) the customer skips the order-complete
+page entirely and lands in the editor with the prompt already building.
+
+**Existing customers keep their prompt (1.26.0).** A visitor who already has
+an account is sent to log in *with* the prompt (the widget's "Already have an
+account? Log in" link and its "Log in" step), and after login the module
+routes it into a workspace they own and opens the editor. Three settings on
+the Reseller Console's **Prompt Box** page (card *Existing customers*) decide
+how:
+
+| Setting | What it does |
+|---------|--------------|
+| **Existing Customer Workspace** | Which workspace builds the prompt: *Most recently opened* (default), *Newest*, *Oldest*, or *Ask the customer* (a small unbranded client-area page: one "Build it here" button per workspace plus "Start a new workspace"). Workspaces with no credits left are skipped when the customer has two to five. |
+| **Starter Product** | For customers with no active workspace. A *free* Swarmz product here is ordered and activated on the spot with the prompt attached, then the editor opens. A paid product — or "Send to cart" — lands them in the cart with the product preselected and the prompt riding along (the plan they picked in the widget when no starter is set). |
+| **Open Editor After Checkout** | When a classic-cart order activates instantly, open the editor from the order-complete page instead of waiting for a click. Default on. |
+
+Headless integrations call `SwarmzPromptBox.login({prompt, pid})` and send the
+browser to the URL it resolves with. The embedded snippet itself needs no
+change. A *Recent existing-customer logins* table on the same console page
+shows what each sign-in was routed to.
 
 **Credit packs (catalog-first since 1.20.0)** — sell extra Swarmz credits as
 ordinary WHMCS **Product Addons**, so a customer who runs out mid-build can buy
