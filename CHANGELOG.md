@@ -5,7 +5,7 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.26.0] - 2026-10-08
+## [1.26.0] - 2026-10-09
 
 ### Added
 - **Existing customers keep their prompt.** A visitor who types a prompt into
