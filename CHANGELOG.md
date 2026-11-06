@@ -5,6 +5,48 @@ All notable changes to this WHMCS module are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.27.0] - 2026-11-06
+
+### Changed
+- **The nightly renewal safety net sends only what changed, in one request.**
+  The daily cron used to re-send every active service's next due date to the
+  platform, one request per service, every night — and the platform answered
+  "already refreshed" for nearly all of them. A host with a few hundred
+  customers ran into the platform's per-minute limit, so the services at the
+  end of the list were silently left out and a renewal could go without its
+  credit reset. The module now remembers, per service, the last due date the
+  platform accepted and sends only the services whose due date moved — all
+  of them in **one** request (the platform's new batch body, up to 200
+  services per request). Steady state is a handful of calls per host per
+  night, however many customers you have. A refresh that actually rolled a
+  cycle is still logged as `DailyCronJob.RenewalRecovered`; every pass now
+  also logs one `DailyCronJob.RenewalSweep` line with its counts (services,
+  unchanged, sent, refreshed, skipped, failed).
+- **Once a day.** Some WHMCS installs fire the daily cron more than once a
+  day (two cron schedules, a manual re-run). A second pass within 20 hours is
+  now a no-op and logs a single `DailyCronJob.Skipped` line.
+- **Rate limits are honoured.** When the platform answers 429, the module
+  waits the `retry_after_seconds` it was told (at most 65 s) and retries that
+  request once; a second 429 ends the pass and the rest is picked up the
+  next night. It never spins.
+- **Works against any platform version.** If the platform does not know the
+  batch body yet, the module falls back to one request per service, paced
+  (ten calls, then a ten-second pause) so it stays inside the older limit.
+- The renewal safety net now runs right after the daily usage read, before
+  the per-service status probes, because the platform's per-minute limit is
+  one bucket per API key shared by every endpoint.
+
+### Notes
+- One small module-owned table is added (`mod_swarmz_cycle`: service id, the
+  last due date the platform accepted, when), created on activation/upgrade
+  and lazily on first use; nothing existing is altered. The addon's settings
+  storage gains one row (`Daily Cron Last Run`) that records when the daily
+  pass last ran. No settings change meaning.
+- `InvoicePaid` is unchanged (it is the primary renewal signal); it only
+  records the anchor it just refreshed so the night pass does not re-send it.
+- The first daily pass after updating sends every active service once (the
+  table starts empty); from the second night on, only changed due dates.
+
 ## [1.26.0] - 2026-10-09
 
 ### Added

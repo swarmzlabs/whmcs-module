@@ -21,7 +21,7 @@ require_once __DIR__ . '/Exceptions.php';
 class Api
 {
     /** Module version, used in User-Agent and bug reports. */
-    const VERSION = '1.26.0';
+    const VERSION = '1.27.0';
 
     /** Default base URL (swarmz public API). Server config can override. */
     const DEFAULT_BASE_URL = 'https://api.swarmz.net';
@@ -51,6 +51,29 @@ class Api
 
     /** Base backoff between retries (milliseconds); doubles per attempt. */
     const RETRY_BACKOFF_MS = 300;
+
+    /**
+     * Batch plan refresh (v1.27.0). The platform accepts up to this many
+     * services per platform-plan-refresh request and runs them one after
+     * another server-side (about 60 ms each measured), so one request carries
+     * a whole nightly sweep; the timeout below leaves headroom for a full chunk.
+     */
+    const PLAN_REFRESH_BATCH_MAX = 200;
+
+    /** Request timeout for one batch chunk (seconds). */
+    const PLAN_REFRESH_BATCH_TIMEOUT_SECONDS = 120;
+
+    /**
+     * Single-call fallback pacing (a platform deployment without the batch
+     * body): after every PLAN_REFRESH_PACE_EVERY calls, pause for
+     * PLAN_REFRESH_PACE_SECONDS. Ten calls per ten seconds stays inside the
+     * pre-batch 60-per-minute limit instead of tripping it.
+     */
+    const PLAN_REFRESH_PACE_EVERY = 10;
+    const PLAN_REFRESH_PACE_SECONDS = 10;
+
+    /** Longest single wait on a 429 (one rate-limit window plus slack). */
+    const RATE_LIMIT_MAX_WAIT_SECONDS = 65;
 
     /** @var string Base URL without trailing slash. */
     private $baseUrl;
@@ -141,6 +164,242 @@ class Api
         // v1.23.0: report this install's SystemURL so the platform can deep-link
         // customers back into this WHMCS for upgrades (see upgrade.php).
         return $this->postPlatform('platform-plan-refresh', self::withPortal($body, true));
+    }
+
+    /**
+     * Refresh many services in one go (v1.27.0). Maps to the batch body of
+     * POST /functions/v1/platform-plan-refresh:
+     *   { services: [{ tenant_id | external_ref, cycle_anchor }, …] }   (<= 200)
+     *   -> { ok, results: [{ tenant_id, external_ref, ok, status, skipped, reason, result | error }] }
+     *
+     * Items go out in chunks of PLAN_REFRESH_BATCH_MAX, each result keyed by
+     * the item's index. When the platform does not know the batch body yet (a
+     * 404, or a 400 `missing_fields` because it looked for a top-level id),
+     * every remaining item is sent as a single planRefresh() call instead,
+     * paced (PLAN_REFRESH_PACE_*), so the module works against any platform
+     * version. A 429 is honoured ONCE per call: wait `retry_after_seconds`
+     * (capped at RATE_LIMIT_MAX_WAIT_SECONDS), retry that request; a second
+     * 429, a gateway error or a transport fault ends the run early and the
+     * rest is reported as failed (the caller retries on its next pass). It
+     * never spins.
+     *
+     * @param array<int,array{tenant_id?:string,external_ref?:string,cycle_anchor:string}> $items
+     * @return array{mode:string,results:array<int,array>,requests:int,rate_limited:int,aborted:bool}
+     *   mode         'batch' | 'single' (the fallback was used)
+     *   results      index => {ok:bool, status:int, skipped:bool, reason:?string, result:?array, error:?string}
+     *   requests     HTTP requests made
+     *   rate_limited 429 waits taken (0 or 1)
+     *   aborted      true when the run stopped early
+     */
+    public function planRefreshBatch(array $items): array
+    {
+        $items = array_values($items);
+        $state = [
+            'mode' => 'batch', 'results' => [], 'requests' => 0, 'rate_limited' => 0,
+            'aborted' => false, 'waited' => false, 'single_calls' => 0,
+        ];
+        $chunks = array_chunk($items, self::PLAN_REFRESH_BATCH_MAX, true);
+        foreach ($chunks as $chunk) {
+            if ($state['mode'] === 'batch') {
+                $outcome = $this->postPlanRefreshChunk($chunk, $state);
+                if ($outcome['kind'] === 'results') {
+                    foreach ($outcome['results'] as $i => $r) {
+                        $state['results'][$i] = $r;
+                    }
+                    continue;
+                }
+                if ($outcome['kind'] === 'abort') {
+                    $this->failRemaining($items, $state, $outcome);
+                    break;
+                }
+                $state['mode'] = 'single'; // batch body unsupported: this chunk and the rest go one by one
+            }
+            foreach ($chunk as $i => $item) {
+                if ($state['single_calls'] > 0 && $state['single_calls'] % self::PLAN_REFRESH_PACE_EVERY === 0) {
+                    $this->pause(self::PLAN_REFRESH_PACE_SECONDS);
+                }
+                $state['single_calls']++;
+                $outcome = $this->postPlanRefreshSingle($item, $state);
+                if ($outcome['kind'] === 'abort') {
+                    $this->failRemaining($items, $state, $outcome);
+                    break 2;
+                }
+                $state['results'][$i] = $outcome['result'];
+            }
+        }
+        ksort($state['results']);
+        return [
+            'mode'         => $state['mode'],
+            'results'      => $state['results'],
+            'requests'     => $state['requests'],
+            'rate_limited' => $state['rate_limited'],
+            'aborted'      => $state['aborted'],
+        ];
+    }
+
+    /**
+     * One batch chunk. Returns ['kind' => 'results', 'results' => [...]],
+     * ['kind' => 'unsupported'] (fall back to single calls) or
+     * ['kind' => 'abort', status, error, reason].
+     */
+    private function postPlanRefreshChunk(array $chunk, array &$state): array
+    {
+        $body = self::withPortal(['services' => array_values($chunk)], true);
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $state['requests']++;
+                $res = $this->post(
+                    self::FUNCTIONS_PATH . '/platform-plan-refresh',
+                    $body,
+                    self::PLAN_REFRESH_BATCH_TIMEOUT_SECONDS
+                );
+                $rows = (isset($res['body']['results']) && is_array($res['body']['results']))
+                    ? array_values($res['body']['results'])
+                    : null;
+                if ($rows === null || count($rows) !== count($chunk)) {
+                    return [
+                        'kind' => 'abort', 'status' => (int) $res['statusCode'], 'error' => 'invalid_response',
+                        'reason' => 'the batch answer did not carry one result per service',
+                    ];
+                }
+                $out = [];
+                $n = 0;
+                foreach ($chunk as $i => $item) {
+                    $out[$i] = self::normaliseBatchResult($rows[$n++]);
+                }
+                return ['kind' => 'results', 'results' => $out];
+            } catch (SwarmzApiException $e) {
+                if (self::batchUnsupported($e)) {
+                    return ['kind' => 'unsupported'];
+                }
+                if ($e->getStatusCode() === 429 && !$state['waited']) {
+                    $state['waited'] = true;
+                    $state['rate_limited']++;
+                    $this->pause(self::retryAfterSeconds($e));
+                    continue;
+                }
+                return self::abortFrom($e, $e->getErrorCode() !== '' ? $e->getErrorCode() : 'api_error');
+            } catch (SwarmzTransportException $e) {
+                return self::abortFrom($e, 'transport_error');
+            }
+        }
+        return ['kind' => 'abort', 'status' => 429, 'error' => 'rate_limited', 'reason' => 'rate limited again after waiting'];
+    }
+
+    /**
+     * One single-item call (the fallback). A definitive per-service answer
+     * (400/404/410/500) is a failed RESULT and the run goes on; a second 429,
+     * a gateway status or a transport fault aborts the run.
+     */
+    private function postPlanRefreshSingle(array $item, array &$state): array
+    {
+        $isTenant = !empty($item['tenant_id']);
+        $ref = $isTenant ? (string) $item['tenant_id'] : (string) ($item['external_ref'] ?? '');
+        $anchor = (string) ($item['cycle_anchor'] ?? '');
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $state['requests']++;
+                $res = $this->planRefresh($ref, $anchor, $isTenant);
+                return ['kind' => 'result', 'result' => self::normaliseSingleResult($res['body'])];
+            } catch (SwarmzApiException $e) {
+                $status = $e->getStatusCode();
+                if ($status === 429 && !$state['waited']) {
+                    $state['waited'] = true;
+                    $state['rate_limited']++;
+                    $this->pause(self::retryAfterSeconds($e));
+                    continue;
+                }
+                $code = $e->getErrorCode() !== '' ? $e->getErrorCode() : 'api_error';
+                if ($status === 429 || in_array($status, [502, 503, 504, 522, 524], true)) {
+                    return self::abortFrom($e, $code);
+                }
+                return ['kind' => 'result', 'result' => [
+                    'ok' => false, 'status' => $status, 'skipped' => false,
+                    'reason' => $e->getMessage(), 'result' => null, 'error' => $code,
+                ]];
+            } catch (SwarmzTransportException $e) {
+                return self::abortFrom($e, 'transport_error');
+            }
+        }
+        return ['kind' => 'abort', 'status' => 429, 'error' => 'rate_limited', 'reason' => 'rate limited again after waiting'];
+    }
+
+    /** True when the platform answered as if `services` were not there (pre-batch deployment). */
+    private static function batchUnsupported(SwarmzApiException $e): bool
+    {
+        if ($e->getStatusCode() === 404) {
+            return true;
+        }
+        return $e->getStatusCode() === 400 && $e->getErrorCode() === 'missing_fields';
+    }
+
+    /** Seconds to wait before retrying a 429: the body's retry_after_seconds, bounded. */
+    private static function retryAfterSeconds(SwarmzApiException $e): int
+    {
+        $body = $e->getResponseBody();
+        $seconds = isset($body['retry_after_seconds']) ? (int) $body['retry_after_seconds'] : 0;
+        if ($seconds <= 0) {
+            $seconds = 60;
+        }
+        return max(1, min(self::RATE_LIMIT_MAX_WAIT_SECONDS, $seconds));
+    }
+
+    private static function abortFrom(SwarmzException $e, string $code): array
+    {
+        return ['kind' => 'abort', 'status' => $e->getStatusCode(), 'error' => $code, 'reason' => $e->getMessage()];
+    }
+
+    /** Mark every item without a result as failed with the abort's status/error. */
+    private function failRemaining(array $items, array &$state, array $abort): void
+    {
+        $state['aborted'] = true;
+        foreach (array_keys($items) as $i) {
+            if (!isset($state['results'][$i])) {
+                $state['results'][$i] = [
+                    'ok' => false, 'status' => (int) ($abort['status'] ?? 0), 'skipped' => false,
+                    'reason' => (string) ($abort['reason'] ?? ''), 'result' => null,
+                    'error' => (string) ($abort['error'] ?? 'aborted'),
+                ];
+            }
+        }
+    }
+
+    /** One slot of the batch answer -> the module's normalised result row. */
+    private static function normaliseBatchResult($r): array
+    {
+        $r = is_array($r) ? $r : [];
+        return [
+            'ok'      => !empty($r['ok']),
+            'status'  => (int) ($r['status'] ?? 0),
+            'skipped' => !empty($r['skipped']),
+            'reason'  => isset($r['reason']) ? (string) $r['reason'] : null,
+            'result'  => (isset($r['result']) && is_array($r['result'])) ? $r['result'] : null,
+            'error'   => isset($r['error']) ? (string) $r['error'] : null,
+        ];
+    }
+
+    /** A single-body 2xx answer ({ ok, result }) -> the same normalised row. */
+    private static function normaliseSingleResult($body): array
+    {
+        $body = is_array($body) ? $body : [];
+        $result = (isset($body['result']) && is_array($body['result'])) ? $body['result'] : null;
+        $skipped = !empty($body['skipped']) || ($result !== null && !empty($result['skipped']));
+        return [
+            'ok'      => true,
+            'status'  => 200,
+            'skipped' => $skipped,
+            'reason'  => ($result !== null && isset($result['reason'])) ? (string) $result['reason'] : null,
+            'result'  => $result,
+            'error'   => null,
+        ];
+    }
+
+    /** Sleep between paced / rate-limited calls. Overridable (tests). */
+    protected function pause(int $seconds): void
+    {
+        if ($seconds > 0) {
+            sleep($seconds);
+        }
     }
 
     /**
@@ -361,14 +620,14 @@ class Api
      *
      * @return array{statusCode:int, body:array}
      */
-    public function post(string $path, array $body): array
+    public function post(string $path, array $body, int $timeoutSeconds = self::TIMEOUT_SECONDS): array
     {
         $url = $this->baseUrl . $path;
         $payload = json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         if ($payload === false) {
             throw new SwarmzTransportException('Failed to encode request body as JSON.');
         }
-        return $this->execute('POST', $url, $payload);
+        return $this->execute('POST', $url, $payload, $timeoutSeconds);
     }
 
     /**
@@ -391,9 +650,10 @@ class Api
      * @param string      $method
      * @param string      $url
      * @param string|null $body JSON-encoded body or null
+     * @param int         $timeoutSeconds Whole-request timeout (batch calls pass a longer one).
      * @return array{statusCode:int, body:array}
      */
-    private function execute(string $method, string $url, $body): array
+    private function execute(string $method, string $url, $body, int $timeoutSeconds = self::TIMEOUT_SECONDS): array
     {
         $lastException = null;
 
@@ -405,7 +665,7 @@ class Api
                 usleep(self::RETRY_BACKOFF_MS * 1000 * $attempt);
             }
             try {
-                return $this->executeOnce($method, $url, $body);
+                return $this->executeOnce($method, $url, $body, $timeoutSeconds);
             } catch (SwarmzTransportException $e) {
                 // Transport-level fault (cURL error / non-JSON body) — retry.
                 $lastException = $e;
@@ -431,9 +691,10 @@ class Api
      * @param string      $method
      * @param string      $url
      * @param string|null $body JSON-encoded body or null
+     * @param int         $timeoutSeconds Whole-request timeout.
      * @return array{statusCode:int, body:array}
      */
-    private function executeOnce(string $method, string $url, $body): array
+    private function executeOnce(string $method, string $url, $body, int $timeoutSeconds = self::TIMEOUT_SECONDS): array
     {
         $ch = curl_init();
 
@@ -447,7 +708,7 @@ class Api
             CURLOPT_URL            => $url,
             CURLOPT_CUSTOMREQUEST  => $method,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => self::TIMEOUT_SECONDS,
+            CURLOPT_TIMEOUT        => max(1, $timeoutSeconds),
             CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
