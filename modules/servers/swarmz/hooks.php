@@ -5,11 +5,13 @@
  * Cross-product behaviour that lives outside the per-service provisioning
  * lifecycle:
  *
- *   - DailyCronJob : a once-a-day reconciliation pass. Refreshes usage for
- *     every provisioned swarmz service (so the client area shows live credit /
- *     cloud stats without waiting for a client-area page load) and reconciles
- *     service status against swarmz (pull externally suspended / terminated
- *     workspaces back into WHMCS).
+ *   - DailyCronJob : a once-a-day reconciliation pass (guarded: a second run
+ *     within 20 hours is a no-op). Refreshes usage for every provisioned
+ *     swarmz service (so the client area shows live credit / cloud stats
+ *     without waiting for a client-area page load), re-sends the renewal
+ *     safety net for the services whose due date moved (one batch request,
+ *     see lib/CycleSync.php) and reconciles service status against swarmz
+ *     (pull externally suspended / terminated workspaces back into WHMCS).
  *
  *   - InvoicePaid : treat a paid renewal invoice as a billing-cycle boundary
  *     and roll the swarmz credit cycle (reset monthly credits + apply rollover)
@@ -29,9 +31,11 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/lib/Exceptions.php';
 require_once __DIR__ . '/lib/Api.php';
 require_once __DIR__ . '/lib/Helpers.php';
+require_once __DIR__ . '/lib/CycleSync.php';
 
 use WHMCS\Database\Capsule;
 use WHMCS\Module\Server\Swarmz\Api;
+use WHMCS\Module\Server\Swarmz\CycleSync;
 use WHMCS\Module\Server\Swarmz\Helpers;
 use WHMCS\Module\Server\Swarmz\SwarmzApiException;
 
@@ -62,6 +66,13 @@ use WHMCS\Module\Server\Swarmz\SwarmzApiException;
  */
 add_hook('DailyCronJob', 1, function ($vars) {
     try {
+        // v1.27.0: once a day. Some installs fire DailyCronJob more than once
+        // (two cron schedules, a manual re-run) and every extra pass repeated
+        // every platform call. A second pass within 20 hours is a no-op.
+        if (!CycleSync::claimDailyRun()) {
+            _swarmz_hookLog('DailyCronJob.Skipped', [], ['note' => 'The daily pass already ran within the last 20 hours; nothing to do.']);
+            return;
+        }
         _swarmz_cron_reconcile();
     } catch (\Throwable $e) {
         // A reconciliation failure must never break the WHMCS daily cron.
@@ -209,7 +220,19 @@ function _swarmz_cron_reconcile(): void
         Helpers::cacheUsage((int) $s->serviceid, $usageMap[$tenant]);
     }
 
-    // ── 2. Optional: nudge swarmz's meter cron, IF the host gave us a secret. ─
+    // ── 2. Renewal safety net (v1.27.0: delta + batch, see lib/CycleSync.php).
+    //      InvoicePaid is best-effort: if the swarmz API was down at the exact
+    //      paid-invoice moment, or the WHMCS cron didn't run that day, the credit
+    //      cycle would never roll and the customer would be short for the month.
+    //      Re-issue an IDEMPOTENT plan refresh for every active service whose
+    //      next-due-date the platform has not accepted yet, anchored at that date
+    //      (never today(), so a cycle can never roll early) — all of them in one
+    //      batch request. Runs BEFORE the per-service status probes below on
+    //      purpose: the platform's per-minute limit is one bucket per API key,
+    //      shared by every endpoint, and the probes would fill it first. ──
+    _swarmz_cron_refreshActiveServices($services);
+
+    // ── 3. Optional: nudge swarmz's meter cron, IF the host gave us a secret. ─
     // Not callable with the platform key (X-Cron-Secret auth) — only fires when
     // a "Meter Cron Secret" is set in the addon. Pure best-effort.
     $meterSecret = trim((string) Helpers::addonSetting('Meter Cron Secret', ''));
@@ -217,19 +240,8 @@ function _swarmz_cron_reconcile(): void
         _swarmz_cron_nudgeMeterCron($baseUrl, $meterSecret);
     }
 
-    // ── 3. Status reconcile: pull terminated workspaces back into WHMCS. ───
+    // ── 4. Status reconcile: pull terminated workspaces back into WHMCS. ───
     _swarmz_cron_reconcileStatuses($api, $services);
-
-    // ── 4. Renewal safety net. InvoicePaid is best-effort: if the swarmz API
-    //      was down at the exact paid-invoice moment, or the WHMCS cron didn't
-    //      run that day, the credit cycle would never roll and the customer would
-    //      be short for the month. Re-issue an IDEMPOTENT plan refresh for every
-    //      active service, anchored at its next-due-date. After a correct renewal
-    //      billing_cycle_start == nextduedate, so the swarmz guard skips — this
-    //      is a no-op EXCEPT for a genuinely missed renewal, which it heals. We
-    //      anchor strictly at the due date (never today()) so a cycle can never
-    //      roll early. ──
-    _swarmz_cron_refreshActiveServices($services);
 
     // ── 4b. Pack-catalog cache refresh (v1.19.0). The plan builder on Swarmz
     //      is the source of truth for pack credits; mappings only CACHE the
@@ -384,13 +396,13 @@ function _swarmz_cron_suspendService(int $serviceId, string $reason): void
 }
 
 /**
- * Renewal safety net (daily). Re-issue an idempotent plan refresh for every
- * ACTIVE swarmz service, anchored at its next-due-date, to recover any renewal
- * whose InvoicePaid hook never landed (API blip / cron skipped). The swarmz
- * guard (billing_cycle_start >= cycle_anchor → skip) makes this a no-op for a
- * service already rolled this cycle; only a missed renewal actually refreshes.
- * We deliberately do NOT fall back to today() for the anchor (a blank due date
- * is skipped) so a cycle can never roll early. Best-effort; never throws.
+ * Renewal safety net (daily). Delegates to CycleSync::sweep() (v1.27.0): only
+ * the services whose next-due-date differs from the last anchor the platform
+ * accepted are sent, in one batch request per API key (single-call fallback
+ * for an older platform, 429-aware, paced). A refresh that actually rolled a
+ * cycle is logged as DailyCronJob.RenewalRecovered, as before; every pass logs
+ * one DailyCronJob.RenewalSweep summary. Anchors come strictly from the due
+ * date (never today()) so a cycle can never roll early. Never throws.
  *
  * @param array<int,\stdClass> $services gathered active/suspended services
  *                                       (with serviceid, status, nextduedate,
@@ -398,56 +410,10 @@ function _swarmz_cron_suspendService(int $serviceId, string $reason): void
  */
 function _swarmz_cron_refreshActiveServices(array $services): void
 {
-    $apiKey = trim((string) Helpers::addonSetting('API Key', ''));
-    $baseUrl = trim((string) Helpers::addonSetting('API Base URL', ''));
-    $baseUrl = $baseUrl !== '' ? rtrim($baseUrl, '/') : Helpers::DEFAULT_API_BASE_URL;
-
-    foreach ($services as $s) {
-        if (strtolower((string) $s->status) !== 'active') {
-            continue; // only active (paid-through) services roll a cycle.
-        }
-        $serviceId = (int) $s->serviceid;
-        $tenant = (string) $s->tenantid;
-        if ($serviceId <= 0 || $tenant === '') {
-            continue;
-        }
-        // Anchor strictly at the next-due-date. Blank/zero → skip (never today()).
-        $due = trim((string) ($s->nextduedate ?? ''));
-        if ($due === '' || strpos($due, '0000-00-00') === 0) {
-            continue;
-        }
-        $anchor = substr($due, 0, 10);
-
-        // Per-service key (server Password) → fall back to the account key.
-        $key = $apiKey;
-        $perServiceKey = Helpers::resolveServiceServerKey($serviceId);
-        if ($perServiceKey !== '') {
-            $key = $perServiceKey;
-        }
-        if ($key === '') {
-            continue;
-        }
-
-        try {
-            $svcApi = new Api($key, $baseUrl);
-            $result = $svcApi->planRefresh($tenant, $anchor, true);
-            $body = $result['body'] ?? [];
-            $skipped = !empty($body['skipped'])
-                || (isset($body['result']) && is_array($body['result']) && !empty($body['result']['skipped']));
-            // A NON-skip means a renewal had been missed and we just healed it —
-            // log it so the host can see the recovery (skips are silent/normal).
-            if (!$skipped) {
-                _swarmz_hookLog(
-                    'DailyCronJob.RenewalRecovered',
-                    ['serviceid' => $serviceId, 'tenant_id' => $tenant, 'cycle_anchor' => $anchor],
-                    $body,
-                    $svcApi->maskedKey()
-                );
-            }
-        } catch (\Throwable $e) {
-            // Best-effort; a transient failure is retried on tomorrow's cron.
-            continue;
-        }
+    try {
+        CycleSync::sweep($services);
+    } catch (\Throwable $e) {
+        _swarmz_hookLog('DailyCronJob.RenewalSweep.Failed', [], ['error' => $e->getMessage()]);
     }
 }
 
@@ -511,6 +477,12 @@ function _swarmz_cron_refreshInvoiceServices(int $invoiceId): void
                 $result['body'],
                 $api->maskedKey()
             );
+            // v1.27.0: remember the anchor the platform accepted, so the nightly
+            // safety net does not re-send this service until its due date moves.
+            $body = is_array($result['body'] ?? null) ? $result['body'] : [];
+            $skipped = !empty($body['skipped'])
+                || (isset($body['result']) && is_array($body['result']) && !empty($body['result']['skipped']));
+            CycleSync::recordAnchor($serviceId, $cycleAnchor, $skipped ? 'skipped' : 'refreshed');
         } catch (SwarmzApiException $e) {
             // 404 = endpoint not deployed yet; any other = soft. Never throw.
             _swarmz_hookLog(
